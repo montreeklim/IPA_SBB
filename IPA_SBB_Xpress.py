@@ -107,13 +107,19 @@ print(a_coeff)
 
 # Create a simple Linear classifier problem
 # n = 3, m = 4, k = 5
-n = 3
-m = 4
-k = 5
+n = 3 #dimension
+m = 4 #number of A points
+k = 5 #number of B points
 
 # Random matrix A, B
+np.random.seed(1012310)
 A = np.random.random(m*n).reshape(m, n)
 B = np.random.random(k*n).reshape(k, n)
+
+print(A)
+print(B)
+
+print(n)
 
 
 # In[11]:
@@ -138,9 +144,15 @@ prob.presolve()
 # Create variables
 w = [xp.var(name="w{0}".format(i)) for i in range(n)]
 gamma = xp.var(name = "gamma")
+
+#A-point distance
 y = [xp.var(name="y{0}".format(i), lb = 0) for i in range(m)]
+
+#B-point distance
 z = [xp.var(name="z{0}".format(i), lb = 0) for i in range(k)]
-prob.addVariable(w, gamma, y, z)
+
+prob.addVariable(w, gamma, y, z) # figure out how to name variables
+# so that we can see their name when we write the problem to file
 
 # Add constraints
 # prob.addConstraint(y[i] >= - xp.Dot(w, A[i]) + gamma for i in range(m))
@@ -148,8 +160,12 @@ prob.addVariable(w, gamma, y, z)
 prob.addConstraint(y[i] >= - sum(w[j]*A[i][j] for j in range(n)) + gamma for i in range(m))
 prob.addConstraint(z[j] >= sum(w[i]*B[j][i] for i in range(n)) - gamma for j in range(k))
 
+prob.addConstraint(sum(w[i]*w[i] for i in range(n)) >= 1)
+#prob.addConstraint(sum(w[i] for i in range(n)) >= 0.1)
+
 # set objective
 prob.setObjective(sum(y)+sum(z))
+
 
 # Define a callback function to be called when the relaxation has been solved
 def Node_Callback(prob, vertices_facet):
@@ -199,13 +215,26 @@ def ChgBranchObj_Callback(prob, list_of_facets, w_hat):
 # Disable presolved
 prob.setControl({"presolve":0})
 # Silence output
-prob.setControl ('outputlog', 0)
+# prob.setControl ('outputlog', 0)
 # Add the callback function for changing the branching object
 prob.addcboptnode(Node_Callback, None, 2)
 prob.addcbchgbranchobject(ChgBranchObj_Callback, None, 3)
 
+print("------")
+
+print("printing")
+prob.write("myProblem", "lps")
+# exit()
+
+print("------")
+print("solving")
+print("------")
+
+
 # Solve the problem
-prob.mipoptimize()
+# prob.mipoptimize()
+# prob.optimize()
+prob.nlpoptimize()
 
 # Print the solution status
 print("Solution status:", prob.getProbStatusString())

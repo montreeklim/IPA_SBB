@@ -99,7 +99,7 @@ def CreateNewFacets(vertices_matrix, w):
 three_simplex = create_n_simplex(3)
 vertices_matrix = three_simplex[:-1]
 a_coeff = up_extension_constraint(vertices_matrix)
-print(a_coeff)
+# print(a_coeff)
 
 
 # In[10]:
@@ -116,17 +116,10 @@ np.random.seed(1012310)
 A = np.random.random(m*n).reshape(m, n)
 B = np.random.random(k*n).reshape(k, n)
 
-print(A)
-print(B)
+# print(A)
+# print(B)
 
-print(n)
-
-
-# In[11]:
-
-
-w_hat = [0,0,0,0]
-print(all(element == 0 for element in w_hat))
+# print(n)
 
 
 # In[12]:
@@ -155,13 +148,11 @@ prob.addVariable(w, gamma, y, z) # figure out how to name variables
 # so that we can see their name when we write the problem to file
 
 # Add constraints
-# prob.addConstraint(y[i] >= - xp.Dot(w, A[i]) + gamma for i in range(m))
-# prob.addConstraint(z[j] >= xp.Dot(w, B[j]) + gamma for j in range(k))
 prob.addConstraint(y[i] >= - sum(w[j]*A[i][j] for j in range(n)) + gamma for i in range(m))
 prob.addConstraint(z[j] >= sum(w[i]*B[j][i] for i in range(n)) - gamma for j in range(k))
 
 prob.addConstraint(sum(w[i]*w[i] for i in range(n)) >= 1)
-#prob.addConstraint(sum(w[i] for i in range(n)) >= 0.1)
+# prob.addConstraint(sum(w[i] for i in range(n)) >= 0.1)
 
 # set objective
 prob.setObjective(sum(y)+sum(z))
@@ -213,28 +204,31 @@ def ChgBranchObj_Callback(prob, list_of_facets, w_hat):
     return bo
 
 # Disable presolved
-prob.setControl({"presolve":0})
+# prob.setControl({"presolve":0})
 # Silence output
 # prob.setControl ('outputlog', 0)
 # Add the callback function for changing the branching object
-prob.addcboptnode(Node_Callback, None, 2)
-prob.addcbchgbranchobject(ChgBranchObj_Callback, None, 3)
+# prob.addcboptnode(Node_Callback, None, 2)
+# prob.addcbchgbranchobject(ChgBranchObj_Callback, None, 3)
 
 print("------")
 
 print("printing")
-prob.write("myProblem", "lps")
+# prob.write("myProblem", "lps")
+prob.write("myProblem.lp") # to write lp problem with their names
 # exit()
 
 print("------")
 print("solving")
 print("------")
 
+# SLP setting
+# prob.setControl({'slpfeastol': 1e-4, 'slppresolve': 0})
 
 # Solve the problem
 # prob.mipoptimize()
-# prob.optimize()
-prob.nlpoptimize()
+prob.optimize('x') # Use optimize('x') for global solver
+# prob.nlpoptimize()
 
 # Print the solution status
 print("Solution status:", prob.getProbStatusString())
@@ -242,4 +236,7 @@ print("Solution status:", prob.getProbStatusString())
 print("Optimal solution:", prob.getSolution())
 # Print the optimal objective value
 print("Optimal objective value:", prob.getObjVal())
+
+print("Solver Status:", prob.getProbStatus())
+
 

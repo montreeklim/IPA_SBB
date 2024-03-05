@@ -1,0 +1,230 @@
+Running SLURM prolog script on gold53.cluster.local
+===============================================================================
+Job started on Tue Mar  5 12:05:01 GMT 2024
+Job ID          : 5581010
+Job name        : python-example
+WorkDir         : /mainfs/home/mj1v21/mj1v21
+Command         : /mainfs/home/mj1v21/mj1v21/pythonexample.slurm
+Partition       : serial
+Num hosts       : 1
+Num cores       : 10
+Num of tasks    : 10
+Hosts allocated : gold53
+Job Output Follows ...
+===============================================================================
+Lmod has detected the following error: Cannot load module "python/3.11.0"
+because these module(s) are loaded:
+   conda
+
+While processing the following module(s):
+    Module fullname  Module Filename
+    ---------------  ---------------
+    python/3.11.0    /local/modules/apps/python/3.11.0.lua
+
+Using the Community license in this session. If you have a full Xpress license, pass the full path to your license file to xpress.init(). If you want to use the FICO Community license and no longer want to see this message, use the following code before using the xpress module:
+  xpress.init('/home/mj1v21/.conda/envs/myenv/lib/python3.10/site-packages/xpress/license/community-xpauth.xpr')
+ 
+Reading Problem qcqp_prob_con
+Problem Statistics
+           1 (      0 spare) rows
+           4 (      0 spare) structural columns
+           0 (      0 spare) non-zero elements
+          10 quadratic elements in objective
+           5 quadratic elements in 1 quadratic constraints
+MIP Entity Statistics
+           0 entities        0 sets        0 set members
+FICO Xpress v9.3.0, Community, solve started 12:05:03, Mar 5, 2024
+Heap usage: 398KB (peak 398KB, 120KB system)
+Minimizing MILP qcqp_prob_con using up to 64 threads and up to 1511GB memory, with these control settings:
+OUTPUTLOG = 1
+Original problem has:
+        37 rows           13 cols           73 elements         0 entities
+Presolved problem has:
+        24 rows           13 cols           56 elements         0 entities
+Presolve finished in 0 seconds
+Heap usage: 408KB (peak 408KB, 120KB system)
+
+Coefficient range                    original                 solved        
+  Coefficients   [min,max] : [ 1.00e+00,  4.00e+01] / [ 2.19e-01,  1.25e+00]
+  RHS and bounds [min,max] : [ 1.10e+01,  1.08e+03] / [ 2.45e+01,  1.12e+02]
+  Objective      [min,max] : [ 2.00e+00,  6.00e+00] / [ 8.00e+00,  1.60e+01]
+Autoscaling applied Curtis-Reid scaling
+
+Will try to keep branch and bound tree memory usage below 1435.9GB
+Starting concurrent solve with dual (1 thread)
+
+ Concurrent-Solve,   0s
+            Dual        
+    objective   dual inf
+ D -2169.0000   .0000000
+------- optimal --------
+Concurrent statistics:
+      Dual: 9 simplex iterations, 0.00s
+Optimal solution found
+ 
+   Its         Obj Value      S   Ninf  Nneg   Sum Dual Inf  Time
+     9      -2169.000000      D      0     0        .000000     0
+Dual solved problem
+  9 simplex iterations in 0.00 seconds at time 0
+
+Final objective                       : -2.169000000000000e+03
+  Max primal violation      (abs/rel) : 3.553e-15 / 3.553e-15
+  Max dual violation        (abs/rel) :       0.0 /       0.0
+  Max complementarity viol. (abs/rel) :       0.0 /       0.0
+
+Starting root cutting & heuristics
+Deterministic mode with up to 48 additional threads
+ 
+ Its Type    BestSoln    BestBound   Sols    Add    Del     Gap     GInf   Time
+ENTERING THE PREINTSOL CALLBACK
+Soltype =  1
+Sol =  [  5.5    6.75   8.    20.    74.25  88.     0.     0.   160.   400.
+   0.     0.   135.  ] refuse =  1
+ENTERING THE PREINTSOL CALLBACK
+Soltype =  1
+Sol =  [  5.5    6.75   8.    20.    74.25  88.     0.     0.   160.   400.
+   0.     0.   135.  ] refuse =  1
+ENTERING THE PREINTSOL CALLBACK
+Soltype =  1
+Sol =  [  5.5    6.75   8.    20.    74.25  88.     0.     0.   160.   400.
+   0.     0.   135.  ] refuse =  1
+ENTERING THE PREINTSOL CALLBACK
+Soltype =  1
+Sol =  [  5.5    6.75   8.    20.    74.25  88.     0.     0.   160.   400.
+   0.     0.   135.  ] refuse =  1
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+
+Starting tree search.
+Deterministic mode with up to 64 running threads and up to 128 tasks.
+Heap usage: 3250KB (peak 3582KB, 125KB system)
+ 
+    Node     BestSoln    BestBound   Sols Active  Depth     Gap     GInf   Time
+       1              -1985.123932      0      2      1                0      0
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  1
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+       2              -1985.123932      0      2      2                1      0
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+       3              -1985.123932      0      2      2                1      0
+ENTERING THE PREINTSOL CALLBACK
+Soltype =  0
+Sol =  [ 11.           0.64012461   0.          20.           7.0413707
+   0.           0.           0.           0.         400.
+ 121.           0.40975952  12.80249219] refuse =  0
+*      3 -1228.165483 -1985.123932      1      2      3   38.13%       0      0
+       4 -1228.165483 -1985.123932      1      2      3   38.13%       1      0
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+ENTERING THE PREINTSOL CALLBACK
+Soltype =  0
+Sol =  [  0.           0.          12.12436655  20.           0.
+   0.           0.         147.00025958 242.48733108 400.
+   0.           0.           0.        ] refuse =  0
+*      4 -1390.974143 -1985.123932      2      2      3   29.93%       0      0
+       5 -1390.974143 -1985.123932      2      2      3   29.93%       1      0
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE PREINTSOL CALLBACK
+Soltype =  0
+Sol =  [  4.0236404    5.12099687   0.          20.          20.60504992
+   0.           0.           0.           0.         400.
+  16.18968198  26.22460883 102.4199375 ] refuse =  0
+       6 -1390.974143 -1907.513450      2      2      3   27.08%       1      0
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+       7 -1390.974143 -1907.513450      2      1      3   27.08%       1      0
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+       8 -1390.974143 -1907.513450      2      1      4   27.08%       1      0
+       9 -1390.974143 -1907.513450      2      1      5   27.08%       1      0
+      12 -1390.974143 -1887.919852      2      1      1   26.32%       2      0
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE PREINTSOL CALLBACK
+Soltype =  1
+Sol =  [  9.31251326   0.          13.89641699  20.           0.
+ 129.47140083   0.         193.10910951 277.9283399  400.
+  86.72272262   0.           0.        ] refuse =  1
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE PREINTSOL CALLBACK
+Soltype =  1
+Sol =  [  9.31325378   0.          13.89435932  20.           0.
+ 129.40197908   0.         193.05321856 277.88718645 400.
+  86.73669536   0.           0.        ] refuse =  1
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+i =  0 j =  2
+ENTERING THE CHANGEBRANCHOBJ CALLBACK
+ENTERING THE PREINTSOL CALLBACK
+Soltype =  0
+Sol =  [  9.31323516   0.          13.89440924  20.           0.
+ 129.40190976   0.         193.05460543 277.88818472 400.
+  86.73634864   0.           0.        ] refuse =  0
+*     33 -1887.274798 -1887.599294      3      1     24    0.02%       0      0
+      35 -1887.274798 -1887.599294      3      1     24    0.02%       1      0
+      49 -1887.274798 -1887.276967      3      0      1    0.00%       2      0
+ *** Search completed ***
+Uncrunching matrix
+Final MIP objective                   : -1.887274797618705e+03
+Final MIP bound                       : -1.887276966618706e+03
+  Solution time / primaldual integral :      0.08s/ 74.334175%
+  Number of solutions found / nodes   :         3 /        49
+  Max primal violation      (abs/rel) :       0.0 /       0.0
+  Max integer violation     (abs    ) :       0.0
+Solution: [9.313235160970422, 0.0, 13.894409235886176, 20.0, 0.0, 129.4019097610373, 0.0, 193.05460543044546, 277.8881847177235, 400.0, 86.73634864238863, 0.0, 0.0]
+Violation (0,2,5):  9.124470011556696e-06
+Violation (2,2,7):  2.5838336057404376e-06
+Violation (0,0,10):  5.211471147958946e-07
+3 Violations
+==============================================================================
+Running epilogue script on gold53.
+
+Submit time  : 2024-03-05T12:04:53
+Start time   : 2024-03-05T12:05:01
+End time     : 2024-03-05T12:05:03
+Elapsed time : 00:00:02 (Timelimit=02:30:00)
+
+Job ID: 5581010
+Cluster: i5
+User/Group: mj1v21/pj
+State: COMPLETED (exit code 0)
+Nodes: 1
+Cores per node: 10
+CPU Utilized: 00:00:02
+CPU Efficiency: 10.00% of 00:00:20 core-walltime
+Job Wall-clock time: 00:00:02
+Memory Utilized: 2.54 MB
+Memory Efficiency: 0.00% of 230.71 GB
+

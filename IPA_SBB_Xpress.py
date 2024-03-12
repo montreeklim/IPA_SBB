@@ -152,7 +152,7 @@ def create_problem(filename = None):
     return prob
 
 def cbchecksol(prob, data, soltype, cutoff):
-    print('We are in the preintsol callback.')
+    # print('We are in the preintsol callback.')
     # if (prob.attributes.presolvestate & 128) == 0:
     #     return (1, 0)
     
@@ -188,7 +188,7 @@ def cbchecksol(prob, data, soltype, cutoff):
 def cbbranch(prob, data, branch):
     # return new branching object
     
-    print("We entered the Change Branch Object Callback")
+    # print("We entered the Change Branch Object Callback")
     sol = []
 
     if (prob.attributes.presolvestate & 128) == 0:
@@ -264,20 +264,22 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
     except:
         return 0
     
-    if int(newnode) <= n+2:
+    if int(newnode) <= n+2: # these nodes are created from the root node
         initial_polytope = create_n_simplex(n)
         submatrix = np.delete(initial_polytope, branch, axis=0)
         data[newnode] = submatrix
     else:
+        print('Parentnode = ', parentnode, ', Newnode = ', newnode, ', branch = ', branch)
+        # get relaxation solution
         all_variables = prob.getVariable()
         w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
         w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-        # print(w_sol)
+        # projection new point
         pi_w = np.array(ProjectOnBall(w_sol))
         initial_polytope = data[parentnode]
         submatrix = np.delete(initial_polytope, branch, axis=0)
-        extreme_points = np.concatenate((submatrix, [pi_w]), axis=0)
         # add point pi(w*)
+        extreme_points = np.concatenate((submatrix, [pi_w]), axis=0)
         data[newnode] = extreme_points
     return 0
 

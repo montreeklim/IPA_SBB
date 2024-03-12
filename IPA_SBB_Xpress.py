@@ -68,17 +68,26 @@ def up_extension_constraint(vertices_matrix):
     # new_model.addConstr(gp.quicksum(a_null[i]*new_model.x[i] for i in range(len(a))) >= 0)
     return a_coeff
 
+# def CheckOnBall(w):
+#     tol = 1e-8
+#     if np.linalg.norm(w) <= 1-tol:
+#         return False
+#     else:
+#         return True
+    
 def CheckOnBall(w):
-    tol = 1e-10
-    if np.linalg.norm(w) <= 1-tol:
-        return False
-    else:
+    tol = 1e-8
+    if np.abs(np.linalg.norm(w) - 1) < tol:
         return True
+    else:
+        return False
 
 def ProjectOnBall(w):
     return w/np.linalg.norm(w)
 
 def CreateNewFacets(vertices_matrix, w):
+    vertices_matrix = np.array(vertices_matrix)
+    w = np.array(w)
     # facet is of the form Ax >= b where b = [1,0,0,...,0] E = matrix of the facet
     new_point = ProjectOnBall(w)
     # replace one row of E with new_point
@@ -104,7 +113,7 @@ def create_problem(filename = None):
         # Create a simple Linear classifier problem
         # n = 3, m = 4, k = 5
         global n 
-        n = 3 #dimension
+        n = 2 #dimension
         m = 4 #number of A points
         k = 5 #number of B points
 
@@ -114,23 +123,23 @@ def create_problem(filename = None):
         B = np.random.random(k*n).reshape(k, n)
         
         # Create variables
-        w = [xp.var(name="w{0}".format(i)) for i in range(n)]
-        gamma = xp.var(name = "gamma")
+        w = xp.vars(n, name='w')
+        gamma = xp.var(name="gamma")
 
-        #A-point distance
-        y = [xp.var(name="y{0}".format(i), lb = 0) for i in range(m)]
+        # A-point distance
+        y = xp.vars(m, name='y', lb=0)
 
-        #B-point distance
-        z = [xp.var(name="z{0}".format(i), lb = 0) for i in range(k)]
+        # B-point distance
+        z = xp.vars(k, name='z', lb=0)
 
-        prob.addVariable(w, gamma, y, z) 
+        prob.addVariable(w, gamma, y, z)
 
         # Add constraints
-        prob.addConstraint(y[i] >= - sum(w[j]*A[i][j] for j in range(n)) + gamma for i in range(m))
-        prob.addConstraint(z[j] >= sum(w[i]*B[j][i] for i in range(n)) - gamma for j in range(k))
+        for i in range(m):
+            prob.addConstraint(y[i] >= -sum(w[j] * A[i][j] for j in range(n)) + gamma)
 
-        # prob.addConstraint(sum(w[i]*w[i] for i in range(n)) >= 1)
-        # prob.addConstraint(sum(w[i] for i in range(n)) >= 0.1)
+        for j in range(k):
+            prob.addConstraint(z[j] >= sum(w[i] * B[j][i] for i in range(n)) - gamma)
 
         # set objective
         prob.setObjective(sum(y)+sum(z))
@@ -142,7 +151,7 @@ def create_problem(filename = None):
     
     return prob
 
-def cbchecksol(prob, aux, soltype, cutoff):
+def cbchecksol(prob, data, soltype, cutoff):
     print('We are in the preintsol callback.')
     # if (prob.attributes.presolvestate & 128) == 0:
     #     return (1, 0)
@@ -156,109 +165,30 @@ def cbchecksol(prob, aux, soltype, cutoff):
         return (1, cutoff)
 
     sol = np.array(sol)
-    print(sol)
+    all_variables = prob.getVariable()
+    w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
+    w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+    # print(sol)
 
     # Check if the norm is 1
     # If so, we have a feasible solution
 
     # refuse = 0 if CheckOnBall(sol) else 1
-    if CheckOnBall(sol):
-        print("I am on the ball!")
+    if CheckOnBall(w_sol):
+        # print("I am on the ball!")
         refuse = 0 
     else:
-        print("I am NOT the ball!")
+        # print("I am NOT the ball!")
         refuse = 1
 
     # Return with refuse != 0 if solution is rejected, 0 otherwise;
     # and same cutoff
     return (refuse, cutoff)
 
-# might be useful
-def addrowzip(prob, bo, side, sign, rhs, ind, coef):
-    """
-    Eliminate zero coefficients from coef and corresponding indices,
-    then add row to branching object
-    """
-
-    ind2 = []
-    coe2 = []
-
-    for i in range(len(coef)):
-        if coef[i] != 0:
-            coe2.append(coef[i])
-            ind2.append(ind[i])
-
-    ind3, coe3 = [], []
-    rhs3, status = prob.presolverow(sign, ind2, coe2, rhs, 100, ind3, coe3)
-
-    if len(ind3) == 1:
-
-        if sign == 'G':
-            sign = 'L'
-        else:
-            sign = 'U'
-
-            if coe3[0] < 0:
-                if sign == 'L':
-                    sign = 'U'
-                else:
-                    sign = 'L'
-
-        bo.addbounds(side, [sign], [ind3[0]], [rhs3/coe3[0]])
-
-    elif len(ind3) > 1:
-        bo.addrows(side, [sign], [rhs3], [0, len(ind3)], ind3, coe3)
-
-
-def cbbranch_stub(prob, aux, branch):
-        print("We entered the Change Branch Object Callback STUB")
-
-        print(n)
-    
-        sol = []
-
-        if (prob.attributes.presolvestate & 128) == 0:
-            return branch
-
-        # Retrieve node solution
-        try:
-            prob.getlpsol(x=sol)
-        except:
-            return branch
-        
-        all_variables = prob.getVariable()
-        w_variables = [var for var in all_variables if var.name.startswith("w")]
-
-        print(w_variables)
-
-        # create the new object with n+1 empty branches
-        # bo = xp.branchobj(prob, isoriginal=True)
-        bo = xp.branchobj(prob, isoriginal=False)
-        bo.addbranches(n+1)
-        initial_polytope = create_n_simplex(n)
-        
-        for i in range(n+1):
-            # exclude point initial_polytope[i]
-            submatrix = np.delete(initial_polytope, i, axis=0)  # Exclude row i
-            # derive H-version of facet relaxation
-            a_coeff = up_extension_constraint(submatrix)
-            for j in range(len(a_coeff)):
-                # Need to figure out index and start of variables w
-                if j == 0:
-                    # add constraint aw >= 1
-                    # bo.addrows(i, ['G'], [1], [0, 1], [w_variables[0]], [1])
-                    bo.addrows(i, ['G'], [1], [0, len(w_variables)], [0, 1, 2], a_coeff[j])
-                else:
-                    # add constraint aw >= 0
-                    # bo.addrows(i, ['G'], [0], [0], w_variables, a_coeff[j])
-                    bo.addrows(i, ['G'], [0], [0, len(w_variables)], [0, 1, 2], a_coeff[j])
-        print("BRANCHES AT THE ROOT NODE ARE CREATED")
-        return bo
-
-def cbbranch(prob, aux, branch):
+def cbbranch(prob, data, branch):
+    # return new branching object
     
     print("We entered the Change Branch Object Callback")
-    
     sol = []
 
     if (prob.attributes.presolvestate & 128) == 0:
@@ -271,20 +201,17 @@ def cbbranch(prob, aux, branch):
         return branch
     
     all_variables = prob.getVariable()
-    w_variables = [var for var in all_variables if var.name.startswith("w")]
+    w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
+    w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+    # print(w_sol)
 
-    print(w_variables)
-    
     # Check if it is on the root node
-    if all(element < 1e-10 for element in sol):
+    if all(element < 1e-8 for element in sol):
         # create the new object with n+1 empty branches
         # bo = xp.branchobj(prob, isoriginal=True)
         bo = xp.branchobj(prob, isoriginal=False)
         bo.addbranches(n+1)
         initial_polytope = create_n_simplex(n)
-
-        w_variables_idxs = [0, 1 ,2]
-        
         for i in range(n+1):
             # exclude point initial_polytope[i]
             submatrix = np.delete(initial_polytope, i, axis=0)  # Exclude row i
@@ -294,47 +221,74 @@ def cbbranch(prob, aux, branch):
                 # Need to figure out index and start of variables w
                 if j == 0:
                     # add constraint aw >= 1
-                    # bo.addrows(i, ['G'], [1], [0], w_variables, a_coeff[j])
-                    bo.addrows(i, ['G'], [1], [0, len(w_variables)], w_variables_idxs, a_coeff[j])
+                    bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
                 else:
                     # add constraint aw >= 0
-                    # bo.addrows(i, ['G'], [0], [0], w_variables, a_coeff[j])
-                    bo.addrows(i, ['G'], [0], [0, len(w_variables)], w_variables_idxs, a_coeff[j])
-        print("BRANCHES AT THE ROOT NODE ARE CREATED")
+                    bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
         return bo
     else:
         print("IN THE ELSE BRANCH")
+        print('Branch id = ', branch.getid())
+        print('Number of branches = ', branch.getbranches())
         # create new object with n empty branches
         bo = xp.branchobj(prob, isoriginal=False)
         bo.addbranches(n)
         # get facets
-        # Do we know the extreme points of the current branch?
-        list_of_facets = CreateNewFacets(vertices_matrix, sol)
+        pi_w = ProjectOnBall(w_sol)
+        # Need to find the data w.r.t. current branc
+        list_of_facets = CreateNewFacets(data[4], pi_w) # ***Need to fix in general term***
         # Add constraints for each facet
         for i in range(n):
-            print(i)
             facet = list_of_facets[i]
             for j in range(len(facet)):
-                # Need to figure out index and start of variables w
+                # create constraints from extreme points of the facet
+                a_coeff = up_extension_constraint(facet)
                 if j == 0:
                     # add constraint aw >= 1
-                    # bo.addrows(i, ['G'], [1], [0], w_variables, facet[j])
-                    bo.addrows(i, ['G'], [1], [0, len(w_variables)], w_variables_idxs, facet[j])
+                    bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
                 else:
                     # add constraint aw >= 0
-                    # bo.addrows(i, ['G'], [0], [0], w_variables, facet[j])
-                    bo.addrows(i, ['G'], [0], [0, len(w_variables)], w_variables_idxs, facet[j])
+                    bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
         return bo
     return branch
 
+def cbnewnode(prob, data, parentnode, newnode, branch):
+    sol = []
+
+    if (prob.attributes.presolvestate & 128) == 0:
+        return 0
+
+    # Retrieve node solution
+    try:
+        prob.getlpsol(x=sol)
+    except:
+        return 0
+    
+    if int(newnode) <= n+2:
+        initial_polytope = create_n_simplex(n)
+        submatrix = np.delete(initial_polytope, branch, axis=0)
+        data[newnode] = submatrix
+    else:
+        all_variables = prob.getVariable()
+        w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
+        w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+        # print(w_sol)
+        pi_w = np.array(ProjectOnBall(w_sol))
+        initial_polytope = data[parentnode]
+        submatrix = np.delete(initial_polytope, branch, axis=0)
+        extreme_points = np.concatenate((submatrix, [pi_w]), axis=0)
+        # add point pi(w*)
+        data[newnode] = extreme_points
+    return 0
 
 def solveprob(prob):
 
-    aux = []
-    prob.addcbpreintsol(cbchecksol, aux, 1)
-    # p.addcboptnode(cbaddcuts, 3)
-    prob.addcbchgbranchobject(cbbranch, aux, 1)
-    # prob.addcbchgbranchobject(cbbranch_stub, aux, 1)
+    data = {}
+    prob.addcbpreintsol(cbchecksol, data, 1)
+    # p.addcboptnode(cbaddcuts, data, 3)
+    prob.addcbchgbranchobject(cbbranch, data, 1)
+    # prob.addcbchgbranchobject(cbbranch_stub, data, 1)
+    prob.addcbnewnode(cbnewnode, data, 1)
     prob.mipoptimize()
     
     print("Solution status:", prob.getProbStatusString())

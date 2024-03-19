@@ -1,4 +1,4 @@
-from __future__ import print_function
+# from __future__ import print_function
 
 import xpress as xp
 import numpy as np
@@ -66,9 +66,6 @@ def up_extension_constraint(vertices_matrix):
         null_basis = null_space(subarray)
         for a_null in null_basis.T:
             a_coeff.append(a_null)
-        # a_null = np.squeeze(null_space(subarray))
-        # print('coefficient from null space = ', a_null)
-        # a_coeff.append(a_null)
     # add constraint
     # new_model.addConstr(gp.quicksum(a_null[i]*new_model.x[i] for i in range(len(a))) >= 0)
     return a_coeff
@@ -82,19 +79,6 @@ def CheckOnBall(w):
 
 def ProjectOnBall(w):
     return w/np.linalg.norm(w)
-
-def CreateNewFacets(vertices_matrix, w):
-    vertices_matrix = np.array(vertices_matrix)
-    w = np.array(w)
-    # facet is of the form Ax >= b where b = [1,0,0,...,0] E = matrix of the facet
-    new_point = ProjectOnBall(w)
-    # replace one row of E with new_point
-    list_of_facets = []
-    for i in range(len(vertices_matrix)):
-        new_facet_matrix = vertices_matrix.copy()
-        new_facet_matrix[i] = new_point
-        list_of_facets.append(new_facet_matrix)
-    return list_of_facets
 
 def create_problem(filename = None):
 
@@ -221,13 +205,15 @@ def cbbranch(prob, data, branch):
                     # add constraint aw >= 1
                     bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
                 else:
-                    # add constraint aw >= 0
-                    bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
+                    # add constraint aw <= 0
+                    bo.addrows(i, ['L'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
         return bo
     else:
         pi_w = ProjectOnBall(w_sol)
         # extreme points of the current node
         initial_points = data[prob.attributes.currentnode]
+        print('The current node is ', prob.attributes.currentnode)
+        print('The extreme points at this node are ', data[prob.attributes.currentnode])
         # create new object with n empty branches
         bo = xp.branchobj(prob, isoriginal=False)
         bo.addbranches(n)
@@ -263,6 +249,8 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
     except:
         return 0
     
+    print('Parent node = ', parentnode, 'new node = ', newnode, 'branch = ',branch)
+    
     if int(newnode) <= n+2: # these nodes are created from the root node
         initial_polytope = create_n_simplex(n)
         submatrix = np.delete(initial_polytope, branch, axis=0)
@@ -274,6 +262,7 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
         w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
         # projection new point
         pi_w = np.array(ProjectOnBall(w_sol))
+        print('The projected point is ', pi_w)
         initial_polytope = data[parentnode]
         submatrix = np.delete(initial_polytope, branch, axis=0)
         # add point pi(w*)
@@ -291,11 +280,11 @@ def solveprob(prob):
     prob.mipoptimize()
     
     print("Solution status:", prob.getProbStatusString())
-    # sol = prob.getSolution()
-    # all_variables = prob.getVariable()
-    # w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
-    # w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-    # print("Optimal solution W:", w_sol, ' with norm = ', np.linalg.norm(w_sol))
+    sol = prob.getSolution()
+    all_variables = prob.getVariable()
+    w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
+    w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+    print("Optimal solution W:", w_sol, ' with norm = ', np.linalg.norm(w_sol))
     print("Optimal solution:", prob.getSolution())
     print("Optimal objective value:", prob.getObjVal())
     print("Solver Status:", prob.getProbStatus())

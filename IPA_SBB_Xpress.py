@@ -111,7 +111,7 @@ def create_problem(filename = None):
         # Create a simple Linear classifier problem
         # n = 3, m = 4, k = 5
         global n 
-        n = 4 #dimension
+        n = 2 #dimension
         m = 10 #number of A points
         k = 12 #number of B points
 

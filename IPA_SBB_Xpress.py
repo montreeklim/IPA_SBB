@@ -60,23 +60,21 @@ def up_extension_constraint(vertices_matrix):
 
     # Convert the list of subarrays to a numpy array
     subarrays = np.array(subarrays)
+    # print(subarrays)
     
     for subarray in subarrays:
-        a_null = np.squeeze(null_space(subarray))
-        a_coeff.append(a_null)
+        null_basis = null_space(subarray)
+        for a_null in null_basis.T:
+            a_coeff.append(a_null)
+        # a_null = np.squeeze(null_space(subarray))
+        # print('coefficient from null space = ', a_null)
+        # a_coeff.append(a_null)
     # add constraint
     # new_model.addConstr(gp.quicksum(a_null[i]*new_model.x[i] for i in range(len(a))) >= 0)
     return a_coeff
 
-# def CheckOnBall(w):
-#     tol = 1e-8
-#     if np.linalg.norm(w) <= 1-tol:
-#         return False
-#     else:
-#         return True
-    
 def CheckOnBall(w):
-    tol = 1e-8
+    tol = 1e-6
     if np.abs(np.linalg.norm(w) - 1) < tol:
         return True
     else:
@@ -113,9 +111,9 @@ def create_problem(filename = None):
         # Create a simple Linear classifier problem
         # n = 3, m = 4, k = 5
         global n 
-        n = 2 #dimension
-        m = 4 #number of A points
-        k = 5 #number of B points
+        n = 4 #dimension
+        m = 10 #number of A points
+        k = 12 #number of B points
 
         # Random matrix A, B
         np.random.seed(1012310)
@@ -142,10 +140,10 @@ def create_problem(filename = None):
             prob.addConstraint(z[j] >= sum(w[i] * B[j][i] for i in range(n)) - gamma)
 
         # set objective
-        prob.setObjective(sum(y)+sum(z))
+        prob.setObjective(sum(y)+sum(z), sense = xp.minimize)
         
         # Disable presolved
-        prob.setControl({"presolve":0})
+        # prob.setControl({"presolve":0})
         # Silence output
         # prob.setControl ('outputlog', 0)
     
@@ -153,8 +151,8 @@ def create_problem(filename = None):
 
 def cbchecksol(prob, data, soltype, cutoff):
     # print('We are in the preintsol callback.')
-    # if (prob.attributes.presolvestate & 128) == 0:
-    #     return (1, 0)
+    if (prob.attributes.presolvestate & 128) == 0:
+        return (1, 0)
     
     sol = []
 
@@ -175,10 +173,10 @@ def cbchecksol(prob, data, soltype, cutoff):
 
     # refuse = 0 if CheckOnBall(sol) else 1
     if CheckOnBall(w_sol):
-        # print("I am on the ball!")
+        # print('Norm of the solution = ', np.linalg.norm(w_sol), "I am on the ball!")
         refuse = 0 
     else:
-        # print("I am NOT the ball!")
+        # print('Norm of the solution = ', np.linalg.norm(w_sol), "I am NOT the ball!")
         refuse = 1
 
     # Return with refuse != 0 if solution is rejected, 0 otherwise;
@@ -187,8 +185,6 @@ def cbchecksol(prob, data, soltype, cutoff):
 
 def cbbranch(prob, data, branch):
     # return new branching object
-    
-    # print("We entered the Change Branch Object Callback")
     sol = []
 
     if (prob.attributes.presolvestate & 128) == 0:
@@ -203,7 +199,9 @@ def cbbranch(prob, data, branch):
     all_variables = prob.getVariable()
     w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
     w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-    # print(w_sol)
+
+    if CheckOnBall(w_sol):
+        return branch
 
     # Check if it is on the root node
     if all(element < 1e-8 for element in sol):
@@ -227,22 +225,23 @@ def cbbranch(prob, data, branch):
                     bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
         return bo
     else:
-        print("IN THE ELSE BRANCH")
-        print('Branch id = ', branch.getid())
-        print('Number of branches = ', branch.getbranches())
+        pi_w = ProjectOnBall(w_sol)
+        # extreme points of the current node
+        initial_points = data[prob.attributes.currentnode]
         # create new object with n empty branches
         bo = xp.branchobj(prob, isoriginal=False)
         bo.addbranches(n)
-        # get facets
-        pi_w = ProjectOnBall(w_sol)
-        # Need to find the data w.r.t. current branc
-        list_of_facets = CreateNewFacets(data[4], pi_w) # ***Need to fix in general term***
         # Add constraints for each facet
         for i in range(n):
-            facet = list_of_facets[i]
-            for j in range(len(facet)):
+            submatrix = np.delete(initial_points, i, axis=0)
+            extreme_points = np.concatenate((submatrix, [pi_w]), axis=0)
+            # print(extreme_points)
+            a_coeff = up_extension_constraint(extreme_points)
+
+            for j in range(len(a_coeff)):
                 # create constraints from extreme points of the facet
-                a_coeff = up_extension_constraint(facet)
+                # a_coeff = up_extension_constraint(facet)
+                # print('constraint coeff is ', a_coeff[j])
                 if j == 0:
                     # add constraint aw >= 1
                     bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
@@ -269,7 +268,6 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
         submatrix = np.delete(initial_polytope, branch, axis=0)
         data[newnode] = submatrix
     else:
-        print('Parentnode = ', parentnode, ', Newnode = ', newnode, ', branch = ', branch)
         # get relaxation solution
         all_variables = prob.getVariable()
         w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
@@ -289,19 +287,24 @@ def solveprob(prob):
     prob.addcbpreintsol(cbchecksol, data, 1)
     # p.addcboptnode(cbaddcuts, data, 3)
     prob.addcbchgbranchobject(cbbranch, data, 1)
-    # prob.addcbchgbranchobject(cbbranch_stub, data, 1)
     prob.addcbnewnode(cbnewnode, data, 1)
     prob.mipoptimize()
     
     print("Solution status:", prob.getProbStatusString())
+    # sol = prob.getSolution()
+    # all_variables = prob.getVariable()
+    # w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
+    # w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+    # print("Optimal solution W:", w_sol, ' with norm = ', np.linalg.norm(w_sol))
     print("Optimal solution:", prob.getSolution())
     print("Optimal objective value:", prob.getObjVal())
     print("Solver Status:", prob.getProbStatus())
     
     
+    
 if __name__ == '__main__':
     prob = create_problem(filename = None)
-    prob.write("simple_prob.lp")
+    # prob.write("simple_prob.lp")
     solveprob(prob)
 
 

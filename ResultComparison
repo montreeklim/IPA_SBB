@@ -1,4 +1,4 @@
-Early results with xpress default global solver vs IPA SBB
+Early results of objective function value with xpress default global solver vs IPA SBB
 n   Xpress  IPA
 2   2.834   2.882
 3   2.247   2.838

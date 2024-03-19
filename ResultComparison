@@ -1,0 +1,6 @@
+Early results with xpress default global solver vs IPA SBB
+n   Xpress  IPA
+2   2.834   2.882
+3   2.247   2.838
+4   2.942   2.961
+5   1.537   1.537

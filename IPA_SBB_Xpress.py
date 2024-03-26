@@ -4,6 +4,7 @@ import xpress as xp
 import numpy as np
 from scipy.linalg import null_space
 
+
 def gram_schmidt(A):
     """Orthogonalize a set of vectors stored as the columns of matrix A."""
     # Get the number of vectors.
@@ -95,7 +96,7 @@ def create_problem(filename = None):
         # Create a simple Linear classifier problem
         # n = 3, m = 4, k = 5
         global n 
-        n = 2 #dimension
+        n = 5 #dimension
         m = 10 #number of A points
         k = 12 #number of B points
 
@@ -186,12 +187,13 @@ def cbbranch(prob, data, branch):
 
     if CheckOnBall(w_sol):
         return branch
+    
 
     # Check if it is on the root node
     if all(element < 1e-8 for element in sol):
         # create the new object with n+1 empty branches
         # bo = xp.branchobj(prob, isoriginal=True)
-        bo = xp.branchobj(prob, isoriginal=False)
+        bo = xp.branchobj(prob, isoriginal=True)
         bo.addbranches(n+1)
         initial_polytope = create_n_simplex(n)
         for i in range(n+1):
@@ -214,27 +216,78 @@ def cbbranch(prob, data, branch):
         initial_points = data[prob.attributes.currentnode]
         print('The current node is ', prob.attributes.currentnode)
         print('The extreme points at this node are ', data[prob.attributes.currentnode])
+        
+        if np.linalg.matrix_rank(data[prob.attributes.currentnode]) < n: 
+            print('The matrix of extreme points is not full rank', prob.attributes.currentnode)
+            return branch
         # create new object with n empty branches
-        bo = xp.branchobj(prob, isoriginal=False)
+        bo = xp.branchobj(prob, isoriginal=True)
         bo.addbranches(n)
-        # Add constraints for each facet
         for i in range(n):
             submatrix = np.delete(initial_points, i, axis=0)
             extreme_points = np.concatenate((submatrix, [pi_w]), axis=0)
-            # print(extreme_points)
             a_coeff = up_extension_constraint(extreme_points)
-
             for j in range(len(a_coeff)):
-                # create constraints from extreme points of the facet
-                # a_coeff = up_extension_constraint(facet)
-                # print('constraint coeff is ', a_coeff[j])
                 if j == 0:
-                    # add constraint aw >= 1
                     bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
                 else:
-                    # add constraint aw >= 0
-                    bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
+                    bo.addrows(i, ['L'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
         return bo
+    
+    #-------------------------------------------------------------------------------------------------
+    # n branches but with infeasible solution 
+    
+        # bo = xp.branchobj(prob, isoriginal=True)
+        # bo.addbranches(n)
+        # for i in range(n):
+        #     submatrix = np.delete(initial_points, i, axis=0)
+        #     extreme_points = np.concatenate((submatrix, [pi_w]), axis=0)
+        #     if np.linalg.matrix_rank(extreme_points) < n:
+        #         print('NOT FULL RANK')
+        #         print(w_variables_idxs[0])
+        #         # add constraint w[0] >= 2
+        #         bo.addrows(i, ['G'], [10], [0, len(w_variables_idxs)], w_variables_idxs, [1]*len(w_variables_idxs))
+        #         print('ADD CONSTRAINT SUM(W) >= 10')
+        #     else:
+        #         a_coeff = up_extension_constraint(extreme_points)
+        #         for j in range(len(a_coeff)):
+        #             if j == 0:
+        #                 bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
+        #             else:
+        #                 bo.addrows(i, ['L'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
+        # return bo
+        
+        # ---------------------------------------------------------------------------------
+        # Branch only if the matrix of extreme points is full rank
+        # ---------------------------------------------------------------------------------
+        # non_empty_i = []
+        # for i in range(n):
+        #     submatrix = np.delete(initial_points, i, axis=0)
+        #     extreme_points = np.concatenate((submatrix, [pi_w]), axis=0)
+        #     # Check Critical Case
+        #     if np.linalg.matrix_rank(extreme_points) == n: 
+        #         non_empty_i.append(i)
+        
+        # n_branch = len(non_empty_i)
+        # print('n_branch = ', n_branch)
+        
+        # if n_branch == 0:
+        #     return branch
+        # else:
+        #     bo.addbranches(n_branch)
+        #     for i in range(n_branch):
+        #         submatrix = np.delete(initial_points, non_empty_i[i], axis=0)
+        #         extreme_points = np.concatenate((submatrix, [pi_w]), axis=0)
+        #         a_coeff = up_extension_constraint(extreme_points)
+        #         for j in range(len(a_coeff)):
+        #             # create constraints from extreme points of the facet
+        #             if j == 0:
+        #                 # add constraint aw >= 1
+        #                 bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
+        #             else:
+        #                 # add constraint aw <= 0
+        #                 bo.addrows(i, ['L'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
+        #     return bo
     return branch
 
 def cbnewnode(prob, data, parentnode, newnode, branch):
@@ -262,7 +315,7 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
         w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
         # projection new point
         pi_w = np.array(ProjectOnBall(w_sol))
-        print('The projected point is ', pi_w)
+        # print('The projected point is ', pi_w)
         initial_polytope = data[parentnode]
         submatrix = np.delete(initial_polytope, branch, axis=0)
         # add point pi(w*)
@@ -293,18 +346,4 @@ def solveprob(prob):
     
 if __name__ == '__main__':
     prob = create_problem(filename = None)
-    # prob.write("simple_prob.lp")
     solveprob(prob)
-
-
-# print("------")
-# print("solving")
-# print("------")
-
-# SLP setting
-# prob.setControl({'slpfeastol': 1e-4, 'slppresolve': 0})
-
-# Solve the problem
-# prob.mipoptimize('x')
-# prob.optimize('x') # Use optimize('x') for global solver
-

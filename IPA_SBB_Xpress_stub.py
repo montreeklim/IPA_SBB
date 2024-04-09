@@ -227,7 +227,8 @@ def cbbranch(prob, data, branch):
             rowcoef = []
             bo.getrows(i, maxrows, maxcoefs, rowtype, rhs, start, colind, rowcoef)
             print("Coefficient of branch " ,i," is " , np.array(rowcoef))
-            
+            print("RHS = ", rhs)
+            print("Row type = ", rowtype)
         return bo
     else:
         pi_w = ProjectOnBall(w_sol)
@@ -289,6 +290,7 @@ def cbbranch(prob, data, branch):
             bo.getrows(i, maxrows, maxcoefs, rowtype, rhs, start, colind, rowcoef)
             print("Coefficient of branch " ,i," is " , np.array(rowcoef))
             print("RHS = ", rhs)
+            print("Row type = ", rowtype)
             return bo
     return branch
 
@@ -347,9 +349,9 @@ def solveprob(prob):
     all_variables = prob.getVariable()
     w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
     w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-    print("Optimal solution W:", w_sol, ' with norm = ', np.linalg.norm(w_sol))
-    print("Optimal solution:", prob.getSolution())
-    print("Optimal objective value:", prob.getObjVal())
+    print("Optimal solution W:", np.array(w_sol), ' with norm = ', np.linalg.norm(w_sol))
+    print("Optimal solution:", np.array(prob.getSolution()))
+    print("Optimal objective value:", np.array(prob.getObjVal()))
     print("Solver Status:", prob.getProbStatus())
     
     

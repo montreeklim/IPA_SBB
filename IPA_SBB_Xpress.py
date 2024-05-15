@@ -3,6 +3,7 @@ import numpy as np
 from scipy.linalg import null_space
 import line_profiler
 np.set_printoptions(precision=3, suppress=True)
+# xp.init('C:/Apps/Anaconda3/lib/site-packages/xpress/license/community-xpauth.xpr')
 
 def gram_schmidt(A):
     """Orthogonalize a set of vectors stored as the columns of matrix A."""
@@ -86,8 +87,14 @@ def CheckOnBall(w):
 
 def ProjectOnBall(w):
     """Project the obtained solution onto the ball through the origin."""
-    return w/np.linalg.norm(w)
-
+    norm_w = np.linalg.norm(w)
+    if norm_w == 0 or np.isnan(norm_w):
+        # Handle zero or NaN case gracefully
+        return w  # or return some default value
+    else:
+        # Perform the normalization
+        return w / norm_w
+    
 def create_problem(filename = None):
     """Read the given problem or create simple linear classifier problem."""
 
@@ -104,7 +111,7 @@ def create_problem(filename = None):
         # Create a simple Linear classifier problem
         # n = 3, m = 4, k = 5
         global n 
-        n = 4 #dimension
+        n = 5 #dimension
         m = 20 #number of A points
         k = 20 #number of B points
 
@@ -142,6 +149,56 @@ def create_problem(filename = None):
     
     return prob
 
+def create_problem_full(filename = None):
+
+    # Create a new optimization problem
+    prob = xp.problem()
+    # Disable presolve
+    prob.controls.xslp_presolve = 0
+    prob.presolve()
+
+    # Read the problem from a file
+    if filename != None:
+        prob.read(filename)
+    else:
+        # Create a simple Linear classifier problem
+        # n = 3, m = 4, k = 5
+        global n 
+        n = 5 #dimension
+        m = 20 #number of A points
+        k = 20 #number of B points
+
+        # Random matrix A, B
+        np.random.seed(1012310)
+        A = np.random.random(m*n).reshape(m, n)
+        B = np.random.random(k*n).reshape(k, n)
+        
+        # Create variables
+        w = xp.vars(n, name='w')
+        gamma = xp.var(name="gamma")
+
+        # A-point distance
+        y = xp.vars(m, name='y', lb=0)
+
+        # B-point distance
+        z = xp.vars(k, name='z', lb=0)
+
+        prob.addVariable(w, gamma, y, z)
+
+        # Add constraints
+        for i in range(m):
+            prob.addConstraint(y[i] >= -sum(w[j] * A[i][j] for j in range(n)) + gamma)
+
+        for j in range(k):
+            prob.addConstraint(z[j] >= sum(w[i] * B[j][i] for i in range(n)) - gamma)
+        
+        prob.addConstraint(sum(w[i]*w[i] for i in range(n)) >= 1)
+
+        # set objective
+        prob.setObjective(sum(y)+sum(z))
+    
+    return prob
+
 def cbchecksol(prob, data, soltype, cutoff):
     """Callback function to reject the solution if it is not on the ball and accept otherwise."""
     # print('We are in the preintsol callback.')
@@ -171,7 +228,6 @@ def cbchecksol(prob, data, soltype, cutoff):
         # print('Norm of the solution = ', np.linalg.norm(w_sol), "I am on the ball!")
         refuse = 0 
     else:
-        # if np.linalg.norm(w_sol) >= 0.999:
         #     print('Norm of the solution = ', np.linalg.norm(w_sol), "I am NOT the ball!")
         refuse = 1
 
@@ -216,14 +272,20 @@ def cbbranch(prob, data, branch):
                 if j == 0:
                     # check feasibility
                     # for row in submatrix:    
-                    #     print('The product >= 1', np.dot(a_coeff[j], row) >= 1-tol)
+                        # print('The product >= 1', np.dot(a_coeff[j], row) >= 1-tol)
                     # add constraint aw >= 1
                     bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
                 else:
-                    for row in submatrix:    
-                        dot_product = np.dot(a_coeff[j], row)
-                        if dot_product < -tol:
-                            a_coeff[j] = - a_coeff[j]
+                    dot_products = [np.dot(a_coeff[j], row) for row in submatrix]
+                    # print(dot_products, min(dot_products), max(dot_products))
+                    if max(dot_products) < 1e-8:
+                        # Negative case; switch 
+                        a_coeff[j] = - a_coeff[j]
+                    # for row in submatrix:    
+                    #     dot_product = np.dot(a_coeff[j], row)
+                    #     if dot_product < -1e-8:
+                    #         a_coeff[j] = - a_coeff[j]
+                            # print('dot product is = ', dot_product)
                         # print('The product >= 0', np.dot(a_coeff[j], row) >= -tol)
                     # add constraint aw >= 0
                     bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
@@ -258,10 +320,16 @@ def cbbranch(prob, data, branch):
                     #     print('The product >= 1', np.dot(a_coeff[j], row) >= 1-tol)
                     bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
                 else:
-                    for row in extreme_points:    
-                        dot_product = np.dot(a_coeff[j], row)
-                        if dot_product < -tol:
-                            a_coeff[j] = - a_coeff[j]
+                    dot_products = [np.dot(a_coeff[j], row) for row in extreme_points]
+                    if max(dot_products) < 1e-8:
+                        # Negative case; switch 
+                        a_coeff[j] = - a_coeff[j]
+                    # print(dot_products, min(dot_products), max(dot_products))
+                    # for row in extreme_points:    
+                    #     dot_product = np.dot(a_coeff[j], row)
+                    #     if dot_product < -1e-8:
+                    #         a_coeff[j] = - a_coeff[j]
+                            # print('dot product is = ', dot_product)
                     bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
         return bo
     return branch
@@ -292,6 +360,37 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
         data[newnode] = np.vstack((submatrix, pi_w))
     return 0
 
+def cbfindsol(prob, data):
+    prob_full = create_problem_full(filename = None)
+    prob_full.optimize('x')
+    sol_full = prob_full.getSolution()[:-1]
+    prob.addmipsol(sol_full, prob.getVariable(), "True Solution")
+    prob.removecboptnode(cbfindsol, data)
+    return 0
+
+def cbprojectedsol(prob, data):
+    # return new branching object
+    sol = []
+
+    # Retrieve node solution
+    try:
+        prob.getlpsol(x=sol)
+    except:
+        return 0
+    
+    all_variables = prob.getVariable()
+    w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
+    w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+    pi_w = ProjectOnBall(w_sol)
+    # print('pi_w = ', pi_w)
+    if CheckOnBall(pi_w):
+        print('pi_w = ', pi_w)
+        prob.addmipsol(pi_w, w_variables_idxs, "Partial Solution")
+        # prob.removecboptnode(cbprojectedsol, data)
+        return 0
+    else:
+        return 0
+
 
 def solveprob(prob):
     """Function to solve the problem with registered callback functions."""
@@ -300,6 +399,8 @@ def solveprob(prob):
     prob.addcbpreintsol(cbchecksol, data, 1)
     prob.addcbchgbranchobject(cbbranch, data, 1)
     prob.addcbnewnode(cbnewnode, data, 1)
+    # prob.addcboptnode(cbfindsol, data, 3)
+    # prob.addcboptnode(cbprojectedsol, data, 3)
     prob.mipoptimize()
     
     print("Solution status:", prob.getProbStatusString())
@@ -308,7 +409,8 @@ def solveprob(prob):
     w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
     w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
     print("Optimal solution W:", w_sol, ' with norm = ', np.linalg.norm(w_sol))
-    print("Optimal solution:", prob.getSolution())
+    # print("Optimal solution:", prob.getSolution())
+    # print('Length of solutions = ', len(prob.getSolution()))
     print("Optimal objective value:", prob.getObjVal())
     print("Solver Status:", prob.getProbStatus())
     
@@ -320,10 +422,10 @@ if __name__ == '__main__':
     # profile.add_function(cbbranch)
     # profile.add_function(cbnewnode)
     # profile.add_function(solveprob)
-
     
-    tol = 1e-6
+    tol = 1e-4
     prob = create_problem(filename = None)
+    
     
     # Run your script with the profiler
     # profile.run('solveprob(prob)')

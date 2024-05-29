@@ -1,9 +1,10 @@
 import xpress as xp
 import numpy as np
 from scipy.linalg import null_space
-import line_profiler
+# import line_profiler
 np.set_printoptions(precision=3, suppress=True)
 # xp.init('C:/Apps/Anaconda3/lib/site-packages/xpress/license/community-xpauth.xpr')
+xp.init('C:/Users/montr/anaconda3/Lib/site-packages/xpress/license/community-xpauth.xpr') # License path for Laptop
 
 def gram_schmidt(A):
     """Orthogonalize a set of vectors stored as the columns of matrix A."""
@@ -52,12 +53,17 @@ def up_extension_constraint(vertices_matrix):
     """Create a numpy array contains coefficient for adding constraints in new nodes based on matrix of extreme points."""
     # Convert the vertices_matrix to a numpy array
     E = np.array(vertices_matrix)
+    # Check condition number of new_matrix
+    cond_number = np.linalg.cond(E)
+    e = np.ones(len(E))
+    if cond_number >= 1/tol:
+        a = np.linalg.pinv(E) @ e
+    else:
+        a = np.linalg.solve(E, e)
     
     # Compute the coefficient 'a' for the first constraint
-    e = np.ones(len(E))
     a_coeff = np.empty((0, len(E[0])))  # Initialize an empty array to store coefficients
-    
-    a = np.linalg.pinv(E) @ e
+    # a = np.linalg.pinv(E) @ e
     # a = np.linalg.solve(E, e)
     a_coeff = np.vstack((a_coeff, a))
     
@@ -65,7 +71,7 @@ def up_extension_constraint(vertices_matrix):
     n = E.shape[0] - 1  # Number of extreme points
     for i in range(n):
         # Compute the null space basis of the subarray by removing the i-th row
-        null_basis = null_space(np.delete(E, i, axis=0))
+        null_basis = null_space(np.delete(E, i, axis=0), rcond=tol/1000)
         
         # Append each null space vector as a constraint coefficient
         a_coeff = np.vstack((a_coeff, null_basis.T))
@@ -77,9 +83,6 @@ def up_extension_constraint(vertices_matrix):
 def CheckOnBall(w):
     """Check if the obtained solution norm is almost one or not."""
     # tol = 1e-6 if w close to pi(w) accept the 
-    # tol_diff = 1e-2
-    # pi_w = ProjectOnBall(w)
-    # diff = np.abs(pi_w - w)
     if np.abs(np.linalg.norm(w) - 1) < tol:
         return True
     else:
@@ -111,9 +114,9 @@ def create_problem(filename = None):
         # Create a simple Linear classifier problem
         # n = 3, m = 4, k = 5
         global n 
-        n = 5 #dimension
-        m = 20 #number of A points
-        k = 20 #number of B points
+        n = 4 #dimension
+        m = 40 #number of A points
+        k = 40 #number of B points
 
         # Random matrix A, B
         np.random.seed(1012310)
@@ -141,12 +144,7 @@ def create_problem(filename = None):
             
         # set objective
         prob.setObjective(sum(y)+sum(z), sense = xp.minimize)
-        
-        # Disable presolved
-        # prob.setControl({"presolve":0})
-        # Silence output
-        # prob.setControl ('outputlog', 0)
-    
+
     return prob
 
 def create_problem_full(filename = None):
@@ -164,9 +162,9 @@ def create_problem_full(filename = None):
         # Create a simple Linear classifier problem
         # n = 3, m = 4, k = 5
         global n 
-        n = 5 #dimension
-        m = 20 #number of A points
-        k = 20 #number of B points
+        n = 4 #dimension
+        m = 40 #number of A points
+        k = 40 #number of B points
 
         # Random matrix A, B
         np.random.seed(1012310)
@@ -187,10 +185,10 @@ def create_problem_full(filename = None):
 
         # Add constraints
         for i in range(m):
-            prob.addConstraint(y[i] >= -sum(w[j] * A[i][j] for j in range(n)) + gamma)
+            prob.addConstraint(y[i] >= np.dot(-w, A[i]) + gamma)
 
         for j in range(k):
-            prob.addConstraint(z[j] >= sum(w[i] * B[j][i] for i in range(n)) - gamma)
+            prob.addConstraint(z[j] >= np.dot(w, B[j]) - gamma)
         
         prob.addConstraint(sum(w[i]*w[i] for i in range(n)) >= 1)
 
@@ -201,7 +199,6 @@ def create_problem_full(filename = None):
 
 def cbchecksol(prob, data, soltype, cutoff):
     """Callback function to reject the solution if it is not on the ball and accept otherwise."""
-    # print('We are in the preintsol callback.')
     if (prob.attributes.presolvestate & 128) == 0:
         return (1, 0)
     
@@ -267,7 +264,11 @@ def cbbranch(prob, data, branch):
             # exclude point initial_polytope[i]
             submatrix = np.delete(initial_polytope, i, axis=0)  # Exclude row i
             # derive H-version of facet relaxation
-            a_coeff = up_extension_constraint(submatrix)
+            try:
+                a_coeff = up_extension_constraint(submatrix)
+            except:
+                return branch
+            # a_coeff = up_extension_constraint(submatrix)
             for j in range(len(a_coeff)):
                 if j == 0:
                     # check feasibility
@@ -281,55 +282,44 @@ def cbbranch(prob, data, branch):
                     if max(dot_products) < 1e-8:
                         # Negative case; switch 
                         a_coeff[j] = - a_coeff[j]
-                    # for row in submatrix:    
-                    #     dot_product = np.dot(a_coeff[j], row)
-                    #     if dot_product < -1e-8:
-                    #         a_coeff[j] = - a_coeff[j]
-                            # print('dot product is = ', dot_product)
-                        # print('The product >= 0', np.dot(a_coeff[j], row) >= -tol)
-                    # add constraint aw >= 0
                     bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
-            # print('a_coeff = ', a_coeff)
         return bo
     else:
         pi_w = ProjectOnBall(w_sol)
         # extreme points of the current node
         initial_points = data[prob.attributes.currentnode]
-        # print('We are in node: ', prob.attributes.currentnode)
         new_matrix = append_zeros_and_ones(initial_points)
         # This facet is not full rank (two points are too close)
-        if np.linalg.matrix_rank(data[prob.attributes.currentnode]) < n or np.linalg.matrix_rank(new_matrix) != np.linalg.matrix_rank(initial_points): 
-            # print('EXCLUDE THE NODE ', prob.attributes.currentnode)
+        if np.linalg.matrix_rank(data[prob.attributes.currentnode], tol=tol) < n or np.linalg.matrix_rank(new_matrix, tol=tol) != np.linalg.matrix_rank(initial_points, tol=tol):
+        # if np.linalg.matrix_rank(data[prob.attributes.currentnode], tol=0) < n or np.linalg.matrix_rank(new_matrix, tol=0) != np.linalg.matrix_rank(initial_points, tol=0):
             return branch
-        # else:
-            # print('Solution = ', np.array(w_sol), ', projected point = ', pi_w)
-            # print('The extreme points at this node are ', data[prob.attributes.currentnode])
-            # print('The corresponding rank = ', np.linalg.matrix_rank(data[prob.attributes.currentnode]))
-            
-        
+        # Check condition number of new_matrix
+        # cond_number = np.linalg.cond(initial_points)
+        # if cond_number >= 1/tol:
+        #     print("Condition number = ", cond_number, ' matrix = ', initial_points)
+        #     # do not branch on high condition number
+        #     return branch
+
         # create new object with n empty branches
         bo = xp.branchobj(prob, isoriginal=True)
         bo.addbranches(n)
         for i in range(n):
             submatrix = np.delete(initial_points, i, axis=0)
             extreme_points = np.concatenate((submatrix, [pi_w]), axis=0)
-            a_coeff = up_extension_constraint(extreme_points)
+            try:
+                a_coeff = up_extension_constraint(extreme_points)
+            except:
+                print('Cannot obtain coefficient for constraints')
+                return branch
+            # a_coeff = up_extension_constraint(extreme_points)
             for j in range(len(a_coeff)):
                 if j == 0:
-                    # for row in extreme_points:    
-                    #     print('The product >= 1', np.dot(a_coeff[j], row) >= 1-tol)
                     bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
                 else:
                     dot_products = [np.dot(a_coeff[j], row) for row in extreme_points]
                     if max(dot_products) < 1e-8:
                         # Negative case; switch 
                         a_coeff[j] = - a_coeff[j]
-                    # print(dot_products, min(dot_products), max(dot_products))
-                    # for row in extreme_points:    
-                    #     dot_product = np.dot(a_coeff[j], row)
-                    #     if dot_product < -1e-8:
-                    #         a_coeff[j] = - a_coeff[j]
-                            # print('dot product is = ', dot_product)
                     bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
         return bo
     return branch
@@ -361,6 +351,7 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
     return 0
 
 def cbfindsol(prob, data):
+    # sol_full = primalheuristic()
     prob_full = create_problem_full(filename = None)
     prob_full.optimize('x')
     sol_full = prob_full.getSolution()[:-1]
@@ -368,39 +359,97 @@ def cbfindsol(prob, data):
     prob.removecboptnode(cbfindsol, data)
     return 0
 
-def cbprojectedsol(prob, data):
-    # return new branching object
-    sol = []
+# def primalheuristic(filename = None):
+#     prob = xp.problem()
+#     # Disable presolve
+#     prob.controls.xslp_presolve = 0
+#     prob.presolve()
 
-    # Retrieve node solution
-    try:
-        prob.getlpsol(x=sol)
-    except:
-        return 0
+#     # Read the problem from a file
+#     if filename != None:
+#         prob.read(filename)
+#     else:
+#         # Create a simple Linear classifier problem
+#         # n = 3, m = 4, k = 5
+#         global n 
+#         n = 3 #dimension
+#         m = 90 #number of A points
+#         k = 90 #number of B points
+
+#         # Random matrix A, B
+#         np.random.seed(1012310)
+#         A = np.random.random(m*n).reshape(m, n)
+#         B = np.random.random(k*n).reshape(k, n)
+        
+#         # Create variables
+#         w = xp.vars(n, name='w')
+#         gamma = xp.var(name="gamma")
+
+#         # A-point distance
+#         y = xp.vars(m, name='y', lb=0)
+
+#         # # B-point distance
+#         z = xp.vars(k, name='z', lb=0)
+
+#         prob.addVariable(w, gamma, y, z)
+
+#         # Add constraints
+#         for i in range(m):
+#             prob.addConstraint(1 - y[i] <= np.dot(-w, A[i]) + gamma)
+
+#         for j in range(k):
+#             prob.addConstraint(1 - z[j] <= np.dot(w, B[j]) - gamma)
+        
+#         # prob.addConstraint(sum(w[i]*w[i] for i in range(n)) >= 1)
+
+#         # set objective
+#         prob.setObjective(sum(y)+sum(z))
+        
+#         prob.optimize()
+        
+#         all_vars = prob.getVariable()
+#         sol = prob.getSolution()
+#         w_variables_idxs = [ind for ind, var in enumerate(all_vars) if var.name.startswith("w")]
+#         w_sol = np.array(sol[min(w_variables_idxs): max(w_variables_idxs)+1])
+#         norm_w = np.linalg.norm(w_sol)
+#         new_sol = np.array(sol)/norm_w
+
+#     return new_sol
+
+# def cbprojectedsol(prob, data):
     
-    all_variables = prob.getVariable()
-    w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
-    w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-    pi_w = ProjectOnBall(w_sol)
-    # print('pi_w = ', pi_w)
-    if CheckOnBall(pi_w):
-        print('pi_w = ', pi_w)
-        prob.addmipsol(pi_w, w_variables_idxs, "Partial Solution")
-        # prob.removecboptnode(cbprojectedsol, data)
-        return 0
-    else:
-        return 0
+#     sol = []
+
+#     # Retrieve node solution
+#     try:
+#         prob.getlpsol(x=sol)
+#     except:
+#         return 0
+    
+#     all_variables = prob.getVariable()
+#     w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
+#     w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+#     norm_w = np.linalg.norm(w_sol)
+#     if norm_w >= 1e-6:
+#         projected_sol = np.array(sol)/norm_w
+#         print('The new solution is ', projected_sol)
+#         prob.addmipsol(projected_sol, all_variables, "Projected Solution")
+#         # prob.removecboptnode(cbprojectedsol, data)
+#         return 0
+#     else:
+#         return 0
 
 
 def solveprob(prob):
     """Function to solve the problem with registered callback functions."""
 
     data = {}
+    # prob.setControl('feastol', 1e-6)
     prob.addcbpreintsol(cbchecksol, data, 1)
     prob.addcbchgbranchobject(cbbranch, data, 1)
     prob.addcbnewnode(cbnewnode, data, 1)
     # prob.addcboptnode(cbfindsol, data, 3)
-    # prob.addcboptnode(cbprojectedsol, data, 3)
+    # prob.addcboptnode(cbprojectedsol, data, 1)
     prob.mipoptimize()
     
     print("Solution status:", prob.getProbStatusString())
@@ -409,28 +458,12 @@ def solveprob(prob):
     w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
     w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
     print("Optimal solution W:", w_sol, ' with norm = ', np.linalg.norm(w_sol))
-    # print("Optimal solution:", prob.getSolution())
-    # print('Length of solutions = ', len(prob.getSolution()))
     print("Optimal objective value:", prob.getObjVal())
     print("Solver Status:", prob.getProbStatus())
     
     
     
 if __name__ == '__main__':
-    # profile = line_profiler.LineProfiler()
-    # profile.add_function(cbchecksol)
-    # profile.add_function(cbbranch)
-    # profile.add_function(cbnewnode)
-    # profile.add_function(solveprob)
-    
     tol = 1e-4
     prob = create_problem(filename = None)
-    
-    
-    # Run your script with the profiler
-    # profile.run('solveprob(prob)')
-
-    # Display the profiling results
-    # profile.print_stats()
-    
     solveprob(prob)

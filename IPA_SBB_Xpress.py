@@ -1,6 +1,9 @@
 import xpress as xp
 import numpy as np
 from scipy.linalg import null_space
+# import re
+# from scipy.spatial.distance import cdist
+# import pandas as pd
 # import line_profiler
 np.set_printoptions(precision=3, suppress=True)
 # xp.init('C:/Apps/Anaconda3/lib/site-packages/xpress/license/community-xpauth.xpr')
@@ -56,22 +59,21 @@ def up_extension_constraint(vertices_matrix):
     # Check condition number of new_matrix
     cond_number = np.linalg.cond(E)
     e = np.ones(len(E))
-    if cond_number >= 1/tol:
+    if cond_number >= 1e+4:
         a = np.linalg.pinv(E) @ e
     else:
         a = np.linalg.solve(E, e)
     
     # Compute the coefficient 'a' for the first constraint
     a_coeff = np.empty((0, len(E[0])))  # Initialize an empty array to store coefficients
-    # a = np.linalg.pinv(E) @ e
-    # a = np.linalg.solve(E, e)
     a_coeff = np.vstack((a_coeff, a))
     
     # Compute coefficients for additional constraints
     n = E.shape[0] - 1  # Number of extreme points
+
     for i in range(n):
         # Compute the null space basis of the subarray by removing the i-th row
-        null_basis = null_space(np.delete(E, i, axis=0), rcond=tol/1000)
+        null_basis = null_space(np.delete(E, i, axis=0), rcond=1e-4)
         
         # Append each null space vector as a constraint coefficient
         a_coeff = np.vstack((a_coeff, null_basis.T))
@@ -97,6 +99,47 @@ def ProjectOnBall(w):
     else:
         # Perform the normalization
         return w / norm_w
+
+def read_dat_file(file_path):
+    with open(file_path, 'r') as file:
+        lines = file.readlines()
+    
+    M = N = K = 0
+    data_list = []
+    data_section = False
+    
+    # Parse the lines
+    for line in lines:
+        line = line.strip()
+        if line.startswith("set M :="):
+            M_values = line[len("set M :="):].strip().split()
+            M_values = [v for v in M_values if v != ';']
+            M = max(map(int, M_values))
+        elif line.startswith("set N :="):
+            N_values = line[len("set N :="):].strip().split()
+            N_values = [v for v in N_values if v != ';']
+            N = max(map(int, N_values))
+        elif line.startswith("set K :="):
+            K_values = line[len("set K :="):].strip().split()
+            K_values = [v for v in K_values if v != ';']
+            K = max(map(int, K_values))
+        elif line.startswith("1 2:="):
+            data_section = True
+            continue
+        elif data_section:
+            if line == ';':
+                break
+            # Correct parsing of data lines
+            # print(line)
+            parts = line.split()
+            # Skip the first part which is the index
+            data_row = list(map(float, parts[1:]))
+            data_list.append(data_row)
+    
+    # Convert data_list to numpy array with the correct shape
+    data_array = np.array(data_list).reshape(M, N)
+    
+    return M, N, K, data_array
     
 def create_problem(filename = None):
     """Read the given problem or create simple linear classifier problem."""
@@ -109,14 +152,36 @@ def create_problem(filename = None):
 
     # Read the problem from a file
     if filename != None:
-        prob.read(filename)
+        # Read dat file to get M, N, K, a
+        # M, N, K, a = read_dat_file(filename)
+        # print(M, N, K)
+        
+        # # Create problem for k-hyperplane clustering without norm constraints
+        
+        # # Create variables
+        # w = xp.vars(K, N, name='w', lb=0)
+        # gamma = xp.vars(K, name="gamma", lb=0)
+        # x = xp.vars(M, K, name='x', vartype=xp.binary)
+        # y = xp.vars(M, name='y', lb=0)
+        # prob.addVariable(w, gamma, x, y)
+        
+        # # Add constraints
+        # BigM = 10e+6
+        # for i in range(M):
+        #     prob.addConstraint(sum(x[i,j] for j in range(K)) == 1)
+        #     for j in range(K):
+        #         prob.addConstraint(y[i] >= np.dot(w[j], a[i]) - gamma[j] - BigM*(1-x[i,j]))
+                
+        # # set objective
+        # prob.setObjective(sum(y[i]*y[i] for i in range(K)), sense = xp.minimize)
+        return prob
     else:
         # Create a simple Linear classifier problem
         # n = 3, m = 4, k = 5
         global n 
-        n = 4 #dimension
-        m = 40 #number of A points
-        k = 40 #number of B points
+        n = 2 #dimension
+        m = 500 #number of A points
+        k = 500 #number of B points
 
         # Random matrix A, B
         np.random.seed(1012310)
@@ -137,65 +202,91 @@ def create_problem(filename = None):
 
         # Add constraints
         for i in range(m):
-            prob.addConstraint(y[i] >= np.dot(-w, A[i]) + gamma)
+            # prob.addConstraint(y[i] >= np.dot(-w, A[i]) + gamma)
+            prob.addConstraint(y[i] >= np.dot(w, A[i]) - gamma) # swap label
 
         for j in range(k):
-            prob.addConstraint(z[j] >= np.dot(w, B[j]) - gamma)
+            # prob.addConstraint(z[j] >= np.dot(w, B[j]) - gamma)
+            prob.addConstraint(z[j] >= np.dot(-w, B[j]) + gamma) # swap label
             
         # set objective
         prob.setObjective(sum(y)+sum(z), sense = xp.minimize)
 
     return prob
 
-def create_problem_full(filename = None):
+# def create_problem_full(filename = None):
 
-    # Create a new optimization problem
-    prob = xp.problem()
-    # Disable presolve
-    prob.controls.xslp_presolve = 0
-    prob.presolve()
+#     # Create a new optimization problem
+#     prob = xp.problem()
+#     # Disable presolve
+#     prob.controls.xslp_presolve = 0
+#     prob.presolve()
 
-    # Read the problem from a file
-    if filename != None:
-        prob.read(filename)
-    else:
-        # Create a simple Linear classifier problem
-        # n = 3, m = 4, k = 5
-        global n 
-        n = 4 #dimension
-        m = 40 #number of A points
-        k = 40 #number of B points
-
-        # Random matrix A, B
-        np.random.seed(1012310)
-        A = np.random.random(m*n).reshape(m, n)
-        B = np.random.random(k*n).reshape(k, n)
+#     # Read the problem from a file
+#     if filename != None:
+#         # Read dat file to get M, N, K, a
+#         M, N, K, a = read_dat_file(filename)
+#         print(M, N, K)
         
-        # Create variables
-        w = xp.vars(n, name='w')
-        gamma = xp.var(name="gamma")
-
-        # A-point distance
-        y = xp.vars(m, name='y', lb=0)
-
-        # B-point distance
-        z = xp.vars(k, name='z', lb=0)
-
-        prob.addVariable(w, gamma, y, z)
-
-        # Add constraints
-        for i in range(m):
-            prob.addConstraint(y[i] >= np.dot(-w, A[i]) + gamma)
-
-        for j in range(k):
-            prob.addConstraint(z[j] >= np.dot(w, B[j]) - gamma)
+#         # Create problem for k-hyperplane clustering without norm constraints
         
-        prob.addConstraint(sum(w[i]*w[i] for i in range(n)) >= 1)
+#         # Create variables
+#         w = xp.vars(K, N, name='w', lb=0)
+#         gamma = xp.vars(K, name="gamma", lb=0)
+#         x = xp.vars(M, K, name='x', vartype=xp.binary)
+#         y = xp.vars(M, name='y', lb=0)
+#         prob.addVariable(w, gamma, x, y)
+        
+#         # Add constraints
+#         BigM = 10e+4 
+#         for i in range(M):
+#             prob.addConstraint(sum(x[i,j] for j in range(K)) == 1)
+#             for j in range(K):
+#                 prob.addConstraint(y[i] >= np.dot(w[j], a[i]) - gamma[j] - BigM*(1-x[i,j]))
+                
+#         # Norm constraints
+#         for j in range(K):
+#             prob.addConstraint(sum(w[j,d]*w[j,d] for d in range(N)) >= 1)
+        
+#         return prob
+#     else:
+#         # Create a simple Linear classifier problem
+#         # n = 3, m = 4, k = 5
+#         global n 
+#         n = 4 #dimension
+#         m = 250 #number of A points
+#         k = 250 #number of B points
 
-        # set objective
-        prob.setObjective(sum(y)+sum(z))
+#         # Random matrix A, B
+#         np.random.seed(1012310)
+#         A = np.random.random(m*n).reshape(m, n)
+#         B = np.random.random(k*n).reshape(k, n)
+        
+#         # Create variables
+#         w = xp.vars(n, name='w')
+#         gamma = xp.var(name="gamma")
+
+#         # A-point distance
+#         y = xp.vars(m, name='y', lb=0)
+
+#         # B-point distance
+#         z = xp.vars(k, name='z', lb=0)
+
+#         prob.addVariable(w, gamma, y, z)
+
+#         # Add constraints
+#         for i in range(m):
+#             prob.addConstraint(y[i] >= np.dot(-w, A[i]) + gamma)
+
+#         for j in range(k):
+#             prob.addConstraint(z[j] >= np.dot(w, B[j]) - gamma)
+        
+#         prob.addConstraint(sum(w[i]*w[i] for i in range(n)) >= 1)
+
+#         # set objective
+#         prob.setObjective(sum(y)+sum(z))
     
-    return prob
+#     return prob
 
 def cbchecksol(prob, data, soltype, cutoff):
     """Callback function to reject the solution if it is not on the ball and accept otherwise."""
@@ -214,20 +305,14 @@ def cbchecksol(prob, data, soltype, cutoff):
     all_variables = prob.getVariable()
     w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
     w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-    
-    # Add partial mipsol
-    # prob.addmipsol(w_sol, w_variables_idxs, name="Partial Solution")
 
     # Check if the norm is 1
     # If so, we have a feasible solution
     # refuse = 0 if CheckOnBall(sol) else 1
     if CheckOnBall(w_sol):
-        # print('Norm of the solution = ', np.linalg.norm(w_sol), "I am on the ball!")
         refuse = 0 
     else:
-        #     print('Norm of the solution = ', np.linalg.norm(w_sol), "I am NOT the ball!")
         refuse = 1
-
     # Return with refuse != 0 if solution is rejected, 0 otherwise;
     # and same cutoff
     return (refuse, cutoff)
@@ -248,6 +333,7 @@ def cbbranch(prob, data, branch):
     
     all_variables = prob.getVariable()
     w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
+    # print(w_variables_idxs)
     w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
 
     if CheckOnBall(w_sol):
@@ -256,7 +342,6 @@ def cbbranch(prob, data, branch):
     # Check if it is on the root node
     if all(element < 1e-8 for element in sol):
         # create the new object with n+1 empty branches
-        # bo = xp.branchobj(prob, isoriginal=True)
         bo = xp.branchobj(prob, isoriginal=True)
         bo.addbranches(n+1)
         initial_polytope = create_n_simplex(n)
@@ -268,21 +353,20 @@ def cbbranch(prob, data, branch):
                 a_coeff = up_extension_constraint(submatrix)
             except:
                 return branch
-            # a_coeff = up_extension_constraint(submatrix)
+
             for j in range(len(a_coeff)):
                 if j == 0:
-                    # check feasibility
-                    # for row in submatrix:    
-                        # print('The product >= 1', np.dot(a_coeff[j], row) >= 1-tol)
                     # add constraint aw >= 1
+                    print(w_variables_idxs, a_coeff[j])
                     bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
+                    # bo.addrows(i, ['G'], [1], [0], w_variables_idxs, a_coeff[j])
                 else:
                     dot_products = [np.dot(a_coeff[j], row) for row in submatrix]
-                    # print(dot_products, min(dot_products), max(dot_products))
                     if max(dot_products) < 1e-8:
                         # Negative case; switch 
                         a_coeff[j] = - a_coeff[j]
                     bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
+                    # bo.addrows(i, ['G'], [0], [0], w_variables_idxs, a_coeff[j])
         return bo
     else:
         pi_w = ProjectOnBall(w_sol)
@@ -290,15 +374,8 @@ def cbbranch(prob, data, branch):
         initial_points = data[prob.attributes.currentnode]
         new_matrix = append_zeros_and_ones(initial_points)
         # This facet is not full rank (two points are too close)
-        if np.linalg.matrix_rank(data[prob.attributes.currentnode], tol=tol) < n or np.linalg.matrix_rank(new_matrix, tol=tol) != np.linalg.matrix_rank(initial_points, tol=tol):
-        # if np.linalg.matrix_rank(data[prob.attributes.currentnode], tol=0) < n or np.linalg.matrix_rank(new_matrix, tol=0) != np.linalg.matrix_rank(initial_points, tol=0):
+        if np.linalg.matrix_rank(data[prob.attributes.currentnode], tol=1e-4) < n or np.linalg.matrix_rank(new_matrix, tol=1e-4) != np.linalg.matrix_rank(initial_points, tol=1e-4):
             return branch
-        # Check condition number of new_matrix
-        # cond_number = np.linalg.cond(initial_points)
-        # if cond_number >= 1/tol:
-        #     print("Condition number = ", cond_number, ' matrix = ', initial_points)
-        #     # do not branch on high condition number
-        #     return branch
 
         # create new object with n empty branches
         bo = xp.branchobj(prob, isoriginal=True)
@@ -311,16 +388,17 @@ def cbbranch(prob, data, branch):
             except:
                 print('Cannot obtain coefficient for constraints')
                 return branch
-            # a_coeff = up_extension_constraint(extreme_points)
             for j in range(len(a_coeff)):
                 if j == 0:
                     bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
+                    # bo.addrows(i, ['G'], [1], [0], w_variables_idxs, a_coeff[j])
                 else:
                     dot_products = [np.dot(a_coeff[j], row) for row in extreme_points]
-                    if max(dot_products) < 1e-8:
+                    if max(dot_products) < 1e-6:
                         # Negative case; switch 
                         a_coeff[j] = - a_coeff[j]
                     bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, a_coeff[j])
+                    # bo.addrows(i, ['G'], [0], [0], w_variables_idxs, a_coeff[j])
         return bo
     return branch
 
@@ -350,94 +428,39 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
         data[newnode] = np.vstack((submatrix, pi_w))
     return 0
 
-def cbfindsol(prob, data):
-    # sol_full = primalheuristic()
-    prob_full = create_problem_full(filename = None)
-    prob_full.optimize('x')
-    sol_full = prob_full.getSolution()[:-1]
-    prob.addmipsol(sol_full, prob.getVariable(), "True Solution")
-    prob.removecboptnode(cbfindsol, data)
+# def cbfindsol(prob, data):
+#     prob_full = create_problem_full(filename = None)
+#     prob_full.optimize('x')
+#     num_nodes_full = prob_full.attributes.nodes
+#     print("Number of nodes in the tree:", num_nodes_full)
+#     sol_full = prob_full.getSolution()[:-1]
+#     prob.addmipsol(sol_full, prob.getVariable(), "True Solution")
+#     prob.removecboptnode(cbfindsol, data)
+#     return 0
+
+def cbprojectedsol(prob, data):
+    # rand = np.random.rand()
+    # if rand >= 0.1:
+    #     return 0
+    
+    sol = []
+
+    try:
+        prob.getlpsol(x=sol)  # Retrieve node solution
+    except:
+        return 0
+
+    all_variables = prob.getVariable()
+    w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
+    w_sol = sol[min(w_variables_idxs): max(w_variables_idxs) + 1]
+
+    # Check if solution is feasible
+    if np.linalg.norm(w_sol) >= 1e-6:
+        projected_sol = np.array(sol) / np.linalg.norm(w_sol)
+        prob.addmipsol(projected_sol, all_variables, "Projected Solution")
+
     return 0
 
-# def primalheuristic(filename = None):
-#     prob = xp.problem()
-#     # Disable presolve
-#     prob.controls.xslp_presolve = 0
-#     prob.presolve()
-
-#     # Read the problem from a file
-#     if filename != None:
-#         prob.read(filename)
-#     else:
-#         # Create a simple Linear classifier problem
-#         # n = 3, m = 4, k = 5
-#         global n 
-#         n = 3 #dimension
-#         m = 90 #number of A points
-#         k = 90 #number of B points
-
-#         # Random matrix A, B
-#         np.random.seed(1012310)
-#         A = np.random.random(m*n).reshape(m, n)
-#         B = np.random.random(k*n).reshape(k, n)
-        
-#         # Create variables
-#         w = xp.vars(n, name='w')
-#         gamma = xp.var(name="gamma")
-
-#         # A-point distance
-#         y = xp.vars(m, name='y', lb=0)
-
-#         # # B-point distance
-#         z = xp.vars(k, name='z', lb=0)
-
-#         prob.addVariable(w, gamma, y, z)
-
-#         # Add constraints
-#         for i in range(m):
-#             prob.addConstraint(1 - y[i] <= np.dot(-w, A[i]) + gamma)
-
-#         for j in range(k):
-#             prob.addConstraint(1 - z[j] <= np.dot(w, B[j]) - gamma)
-        
-#         # prob.addConstraint(sum(w[i]*w[i] for i in range(n)) >= 1)
-
-#         # set objective
-#         prob.setObjective(sum(y)+sum(z))
-        
-#         prob.optimize()
-        
-#         all_vars = prob.getVariable()
-#         sol = prob.getSolution()
-#         w_variables_idxs = [ind for ind, var in enumerate(all_vars) if var.name.startswith("w")]
-#         w_sol = np.array(sol[min(w_variables_idxs): max(w_variables_idxs)+1])
-#         norm_w = np.linalg.norm(w_sol)
-#         new_sol = np.array(sol)/norm_w
-
-#     return new_sol
-
-# def cbprojectedsol(prob, data):
-    
-#     sol = []
-
-#     # Retrieve node solution
-#     try:
-#         prob.getlpsol(x=sol)
-#     except:
-#         return 0
-    
-#     all_variables = prob.getVariable()
-#     w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
-#     w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-#     norm_w = np.linalg.norm(w_sol)
-#     if norm_w >= 1e-6:
-#         projected_sol = np.array(sol)/norm_w
-#         print('The new solution is ', projected_sol)
-#         prob.addmipsol(projected_sol, all_variables, "Projected Solution")
-#         # prob.removecboptnode(cbprojectedsol, data)
-#         return 0
-#     else:
-#         return 0
 
 
 def solveprob(prob):
@@ -448,22 +471,35 @@ def solveprob(prob):
     prob.addcbpreintsol(cbchecksol, data, 1)
     prob.addcbchgbranchobject(cbbranch, data, 1)
     prob.addcbnewnode(cbnewnode, data, 1)
-    # prob.addcboptnode(cbfindsol, data, 3)
-    # prob.addcboptnode(cbprojectedsol, data, 1)
+    prob.addcbnodelpsolved(cbprojectedsol, data, 1)
+    # prob.addcboptnode(cbfindsol, data, 1)
+    prob.controls.outputlog = 1
     prob.mipoptimize()
     
-    print("Solution status:", prob.getProbStatusString())
-    sol = prob.getSolution()
-    all_variables = prob.getVariable()
-    w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
-    w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-    print("Optimal solution W:", w_sol, ' with norm = ', np.linalg.norm(w_sol))
-    print("Optimal objective value:", prob.getObjVal())
-    print("Solver Status:", prob.getProbStatus())
-    
+    # print("Solution status:", prob.getProbStatusString())
+    # sol = prob.getSolution()
+    # all_variables = prob.getVariable()
+    # w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
+    # w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+    # print("Optimal solution W:", w_sol, ' with norm = ', np.linalg.norm(w_sol))
+    num_nodes = prob.attributes.nodes
+    print("Number of nodes in the tree:", num_nodes)
+    # print("Optimal objective value:", prob.getObjVal())
+    # print("Solver Status:", prob.getProbStatus())
     
     
 if __name__ == '__main__':
     tol = 1e-4
+    # prob_full = create_problem_full(filename = 'srncr_20_2_3_2023_ins.dat')
+    # prob_full.optimize('x')
+    # print("Solution status:", prob_full.getProbStatusString())
+    # num_nodes = prob_full.attributes.nodes
+    # print("Number of nodes in the tree:", num_nodes)
+    # sol = prob_full.getSolution()
+    # all_variables = prob_full.getVariable()
+    # y_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("y")]
+    # y_sol = sol[min(y_variables_idxs): max(y_variables_idxs) + 1]
+    # print(y_sol)
     prob = create_problem(filename = None)
+    # prob = create_problem(filename = 'srncr_20_2_3_2023_ins.dat')
     solveprob(prob)

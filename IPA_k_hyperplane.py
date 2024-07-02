@@ -1,13 +1,10 @@
 import xpress as xp
 import numpy as np
 from scipy.linalg import null_space
-# import re
-# from scipy.spatial.distance import cdist
-# import pandas as pd
-# import line_profiler
+
 np.set_printoptions(precision=3, suppress=True)
-# xp.init('C:/Apps/Anaconda3/lib/site-packages/xpress/license/community-xpauth.xpr')
-xp.init('C:/Users/montr/anaconda3/Lib/site-packages/xpress/license/community-xpauth.xpr') # License path for Laptop
+xp.init('C:/Apps/Anaconda3/lib/site-packages/xpress/license/community-xpauth.xpr')
+# xp.init('C:/Users/montr/anaconda3/Lib/site-packages/xpress/license/community-xpauth.xpr') # License path for Laptop
 
 def gram_schmidt(A):
     """Orthogonalize a set of vectors stored as the columns of matrix A."""
@@ -186,36 +183,41 @@ def create_problem(filename = None):
     # Read the problem from a file
     if filename != None:
         # Read dat file to get M, N, K, a
-        global M, N, K
+        global M, N, K, a
         # M = #points
         # N = #dimensions
         # K = #hyperplane
         M, N, K, a = read_dat_file(filename)
-        print(M, N, K)
+        # print(M, N, K)
+        # print(a)
+    else:
+        np.random.seed = 123
+        M = 60
+        N = 2
+        K = 2
+        a = np.random.rand(M,N)*10
+    # Create problem for k-hyperplane clustering without norm constraints
+    # Create variables
+    w = xp.vars(K, N, name='w', lb=0)
+    gamma = xp.vars(K, name="gamma", lb=0)
+    x = xp.vars(M, K, name='x', vartype=xp.binary)
+    y = xp.vars(M, name='y', lb=0)
+    prob.addVariable(w, gamma, x, y)
         
-        # Create problem for k-hyperplane clustering without norm constraints
+    # Add constraints
+    BigM = 10e+6
+    for i in range(M):
+        prob.addConstraint(sum(x[i,j] for j in range(K)) == 1)
+        for j in range(K):
+            prob.addConstraint(y[i] >= np.dot(w[j], a[i]) - gamma[j] - BigM*(1-x[i,j]))
+            prob.addConstraint(y[i] >= np.dot(-w[j], a[i]) + gamma[j] - BigM*(1-x[i,j]))
+    # set objective
+    prob.setObjective(sum(y[i]*y[i] for i in range(M)), sense = xp.minimize)
         
-        # Create variables
-        w = xp.vars(K, N, name='w', lb=0)
-        gamma = xp.vars(K, name="gamma", lb=0)
-        x = xp.vars(M, K, name='x', vartype=xp.binary)
-        y = xp.vars(M, name='y', lb=0)
-        prob.addVariable(w, gamma, x, y)
-        
-        # Add constraints
-        BigM = 10e+6
-        for i in range(M):
-            prob.addConstraint(sum(x[i,j] for j in range(K)) == 1)
-            for j in range(K):
-                prob.addConstraint(y[i] >= np.dot(w[j], a[i]) - gamma[j] - BigM*(1-x[i,j]))
-                
-        # set objective
-        prob.setObjective(sum(y[i]*y[i] for i in range(K)), sense = xp.minimize)
-        return prob
     return prob
 
 def cbchecksol(prob, data, soltype, cutoff):
-    print('ENTER CBCHECKSOL PREINTSOL')
+    # print('ENTER CBCHECKSOL PREINTSOL')
     """Callback function to reject the solution if it is not on the ball and accept otherwise."""
     if (prob.attributes.presolvestate & 128) == 0:
         return (1, 0)
@@ -242,6 +244,7 @@ def cbchecksol(prob, data, soltype, cutoff):
     # refuse = 0 if CheckOnBall(sol) else 1
     if check_all_balls(w_array):
         refuse = 0 
+        # print('A feasible solution found!')
     else:
         refuse = 1
     # Return with refuse != 0 if solution is rejected, 0 otherwise;
@@ -249,7 +252,7 @@ def cbchecksol(prob, data, soltype, cutoff):
     return (refuse, cutoff)
 
 def cbbranch(prob, data, branch):
-    print('ENTER CBBRANCH CHGBRANCHOBJ')
+    # print('ENTER CBBRANCH CHGBRANCHOBJ')
     """Callback function to create new branching object and add the corresponding constraints."""
     # return new branching object
     sol = []
@@ -260,6 +263,7 @@ def cbbranch(prob, data, branch):
     # Retrieve node solution
     try:
         prob.getlpsol(x=sol)
+        # print('The relaxation solution is ', sol[:N*K])
     except:
         return branch
     
@@ -278,81 +282,66 @@ def cbbranch(prob, data, branch):
     norms = np.linalg.norm(w_array, axis=-1)
     # Choose a ball to branch on
     ball_idx = np.argmin(norms)
+    # print('At this node norms and ball_idx = ', norms, ball_idx)
     w_ball_idx = list(split_index[ball_idx])
+    # print('Branching ball indices are ', w_ball_idx)
     if np.any(norms < 1e-6):
         # create the new object with n+1 empty branches based on an empty ball
         bo = xp.branchobj(prob, isoriginal=True)
         bo.addbranches(N + 1)
-        initial_polytope = create_n_simplex(N)
+        initial_polytope = create_n_simplex(N) # make it global
         for i in range(N + 1):
+            # print(i)
             # exclude point initial_polytope[i]
             submatrix = np.delete(initial_polytope, i, axis=0)  # Exclude row i
             # derive H-version of facet relaxation
             a_coeff = up_extension_constraint(submatrix)
-            print('A_Coeff = ', a_coeff)
-            print('ball_idx = ', ball_idx)
-            print('split_index = ', split_index[ball_idx])
 
             # Here is the difference since we need to assign constraints on the correct ball
             for j in range(len(a_coeff)):
-                colidx = []
-                elements = []
                 if j == 0:
-                    for ind, val in enumerate(w_ball_idx):
-                        colidx.append(val)
-                        elements.append(a_coeff[j][ind])
-                    print(colidx, elements)
-                    bo.addrows(i, ['G'], [1], [min(colidx),max(colidx)], colidx, elements)
-                    # bo.addrows(i, ['G'], [1], [0, N], w_ball_idx, a_coeff[j])
-                    # bo.addrows(i, ['G'], [1], [0, len(w_variables_idxs)], w_variables_idxs, coeffs)
+                    bo.addrows(i, ['G'], [1], [0, N*K], w_ball_idx, a_coeff[j])
                 else:
-                    print(j, a_coeff[j])
                     dot_products = [np.dot(a_coeff[j], row) for row in submatrix]
                     if max(dot_products) < 1e-6:
                         # Negative case; switch 
                         a_coeff[j] = - a_coeff[j]
-                    for ind, val in enumerate(w_ball_idx):
-                        colidx.append(val)
-                        elements.append(a_coeff[j][ind])  # Negate the coefficients
-                    print(colidx, elements)
-                    bo.addrows(i, ['G'], [0], [min(colidx),max(colidx)], colidx, elements)
-                print('The constraints are added')
+                    bo.addrows(i, ['G'], [0], [0, N*K], w_ball_idx, a_coeff[j])
+                # print('The constraints are added for i = ', i, ' and j = ', j)
                     # bo.addrows(i, ['G'], [0], [0, len(w_variables_idxs)], w_variables_idxs, coeffs)
         return bo
-    # else:
-    #     print('IN ELSE PART')
-    #     pi_w_array = [ProjectOnBall(w_j) for w_j in w_array]
-    #     # extreme points of the current node
-    #     initial_points = data[prob.attributes.currentnode][ball_idx]
-    #     new_matrix = append_zeros_and_ones(initial_points)
-    #     # This facet is not full rank (two points are too close)
-    #     if np.linalg.matrix_rank(initial_points, tol=1e-4) < N or np.linalg.matrix_rank(new_matrix, tol=1e-4) != np.linalg.matrix_rank(initial_points, tol=1e-4):
-    #         return branch
-    #     # create new object with n empty branches
-    #     bo = xp.branchobj(prob, isoriginal=True)
-    #     bo.addbranches(N)
-    #     for i in range(N):
-    #         submatrix = np.delete(initial_points, i, axis=0)
-    #         extreme_points = np.concatenate((submatrix, [pi_w_array[ball_idx]]), axis=0)
-    #         try:
-    #             a_coeff = up_extension_constraint(extreme_points)
-    #         except:
-    #             print('Cannot obtain coefficient for constraints')
-    #             return branch
-    #         for j in range(len(a_coeff)):
-    #             if j == 0:
-    #                 bo.addrows(i, ['G'], [1], [min(w_ball_idx), max(w_ball_idx)], w_ball_idx, a_coeff[j])
-    #             else:
-    #                 dot_products = [np.dot(a_coeff[j], row) for row in extreme_points]
-    #                 if max(dot_products) < 1e-6:
-    #                     # Negative case; switch 
-    #                     a_coeff[j] = - a_coeff[j]
-    #                 bo.addrows(i, ['G'], [0], [min(w_ball_idx), max(w_ball_idx)], w_ball_idx, a_coeff[j])
-    #     return bo
+    else:
+        pi_w_array = [ProjectOnBall(w_j) for w_j in w_array]
+        initial_points = data[prob.attributes.currentnode][ball_idx]
+        new_matrix = append_zeros_and_ones(initial_points)
+        # This facet is not full rank (two points are too close)
+        if np.linalg.matrix_rank(initial_points, tol=1e-4) < N or np.linalg.matrix_rank(new_matrix, tol=1e-4) != np.linalg.matrix_rank(initial_points, tol=1e-4):
+            return branch
+        # create new object with n empty branches
+        bo = xp.branchobj(prob, isoriginal=True)
+        bo.addbranches(N)
+        for i in range(N):
+            submatrix = np.delete(initial_points, i, axis=0)
+            extreme_points = np.concatenate((submatrix, [pi_w_array[ball_idx]]), axis=0)
+            try:
+                a_coeff = up_extension_constraint(extreme_points)
+            except:
+                print('Cannot obtain coefficient for constraints')
+                return branch
+            for j in range(len(a_coeff)):
+                if j == 0:
+                    bo.addrows(i, ['G'], [1], [0, N*K], w_ball_idx, a_coeff[j])
+                else:
+                    dot_products = [np.dot(a_coeff[j], row) for row in extreme_points]
+                    if max(dot_products) < 1e-6:
+                        # Negative case; switch 
+                        a_coeff[j] = - a_coeff[j]
+                    bo.addrows(i, ['G'], [0], [0, N*K], w_ball_idx, a_coeff[j])
+        return bo
     return branch
 
 def cbnewnode(prob, data, parentnode, newnode, branch):
-    print('ENTER CBNEWNODE')
+    # print('ENTER CBNEWNODE')
     """Callback function to add data of extreme points to each node. The data[node][ball_index] represents the matrix of extreme points with corresponding node and ball"""
     sol = []
 
@@ -374,15 +363,33 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
     w_array = split_data(w_sol, K, N)
     norms = np.linalg.norm(w_array, axis=-1)
     ball_idx = np.argmin(norms)
+    # print(norms, ball_idx)
     if np.any(norms < 1e-6):
         # in a root node somehow
         initial_polytope = create_n_simplex(N)
-        data[newnode][ball_idx] = np.delete(initial_polytope, branch, axis=0)
+        for k in range(K):
+            if k == ball_idx:
+                data[newnode][ball_idx] = np.delete(initial_polytope, branch, axis=0)
+            else:
+                try:
+                    data[newnode][k] = data[parentnode][k]
+                except:
+                    data[newnode][k] = initial_polytope
     else:    
         initial_polytope = data[parentnode][ball_idx]
         submatrix = np.delete(initial_polytope, branch, axis=0)
         pi_w = ProjectOnBall(w_array[ball_idx])
-        data[newnode][ball_idx] = np.vstack((submatrix, pi_w))
+        for k in range(K):
+            if k == ball_idx:
+                data[newnode][ball_idx] = np.vstack((submatrix, pi_w))
+            else:
+                try:
+                    data[newnode][k] = data[parentnode][k]
+                except:
+                    data[newnode][k] = initial_polytope
+        # data[newnode][ball_idx] = np.vstack((submatrix, pi_w))
+    # print('Parent node = ', parentnode)
+    # print('New node and its data = ', newnode, data[newnode])
     return 0
 
 def cbprojectedsol(prob, data):
@@ -408,8 +415,6 @@ def cbprojectedsol(prob, data):
 
     return 0
 
-
-
 def solveprob(prob):
     """Function to solve the problem with registered callback functions."""
 
@@ -420,12 +425,20 @@ def solveprob(prob):
     prob.addcbnewnode(cbnewnode, data, 1)
     # prob.addcbnodelpsolved(cbprojectedsol, data, 1)
     # prob.controls.outputlog = 1
+    prob.controls.presolve = 0
     prob.mipoptimize()
     
     print("Solution status:", prob.getProbStatusString())
     
 if __name__ == '__main__':
-    tol = 1e-4
-    prob = create_problem(filename = 'srncr_20_2_3_2023_ins.dat')
+    np.random.seed(123)
+    tol = 1e-6
+    # prob = create_problem(filename = 'srncr_20_2_3_2023_ins.dat')
+    prob = create_problem()
     solveprob(prob)
+    num_nodes = prob.attributes.nodes
+    print("Number of nodes in the tree:", num_nodes)
+    # print("Solution status:", prob.getProbStatusString())
+    sol = prob.getSolution()
+    print("Optimal objective value:", prob.getObjVal())
 

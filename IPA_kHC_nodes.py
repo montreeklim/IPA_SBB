@@ -1,10 +1,37 @@
 import xpress as xp
 import numpy as np
 from scipy.linalg import null_space
+import itertools
 
 np.set_printoptions(precision=3, suppress=True)
-xp.init('C:/Apps/Anaconda3/lib/site-packages/xpress/license/community-xpauth.xpr')
-# xp.init('C:/Users/montr/anaconda3/Lib/site-packages/xpress/license/community-xpauth.xpr') # License path for Laptop
+# xp.init('C:/Apps/Anaconda3/lib/site-packages/xpress/license/community-xpauth.xpr')
+xp.init('C:/Users/montr/anaconda3/Lib/site-packages/xpress/license/community-xpauth.xpr') # License path for Laptop
+
+def ball_idx_to_combination(ball_idx, n, k):
+    """
+    Converts a given ball_idx back into the original combination.
+    
+    Parameters:
+        ball_idx: The integer representing the combination (ball_idx).
+        n: The upper bound of the range (n+1 values).
+        k: The number of loops or elements in the combination.
+    
+    Returns:
+        combination: The list representing the original combination.
+    """
+    combination = []
+    base = n + 1  # Since values range from 0 to n (inclusive)
+    
+    for i in range(k):
+        # Calculate the current index element from ball_idx
+        power = base ** (n - i)
+        element = ball_idx // power
+        combination.append(element)
+        
+        # Reduce ball_idx by the contribution of this element
+        ball_idx -= element * power
+
+    return combination
 
 def gram_schmidt(A):
     """Orthogonalize a set of vectors stored as the columns of matrix A."""
@@ -274,20 +301,6 @@ def cbchecksol(prob, data, soltype, cutoff):
         if prob.attributes.lpobjval == 0:
             refuse = 1
             issue_sol.append(sol)
-        #     # prob.addmipsol(sol, all_variables)
-        #     objval = prob.calcobjective(sol)
-        #     # print('This case the objective is 0')
-        #     if objval <= 0.5:
-        #         print('The objective shows as 0 but the real obj is ', objval)
-            # print(objval)
-        #     print('This case the objective is 0')
-        #     refuse = 1
-        # print('A feasible solution found!')
-            # y_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("y")]
-            # y_sol = sol[min(y_variables_idxs): max(y_variables_idxs)+1]
-            # print('Objective = ', sum([y*y for y in y_sol]))
-        # print('Data at this node ', data[prob.attributes.currentnode])
-        # print(sol)
     else:
         refuse = 1
     
@@ -297,82 +310,101 @@ def cbbranch(prob, data, branch):
     # print('ENTER CBBRANCH CHGBRANCHOBJ')
     """Callback function to create new branching object and add the corresponding constraints."""
     # return new branching object
-    sol = []
-
-    if (prob.attributes.presolvestate & 128) == 0:
-        return branch
-
-    # Retrieve node solution
-    try:
-        prob.getlpsol(x=sol)
-        # print('The relaxation solution is ', sol[:N*K])
-    except:
-        return branch
     
-    w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-    w_array = split_data(w_sol, K, N)
-    split_index = split_data(w_variables_idxs, K, N)
-
-    if check_all_balls(w_array):
-        return branch
+    global initial_polytope
     
-    # print('Relax sol = ', w_sol)
-    # Check if it is on the root node
-    norms = np.linalg.norm(w_array, axis=-1)
-    # Choose a ball to branch on
-    ball_idx = np.argmin(norms)
-    w_ball_idx = list(split_index[ball_idx])
-    
-    
-    if not all(key in data[prob.attributes.currentnode] for key in range(K)):
-        # print('In the root node')
-        # create the new object with n+1 empty branches based on an empty ball
+    if prob.attributes.currentnode == 1:
+        # print('In the root node ', prob.attributes.currentnode)
+        # create the new object with (n+1)^k empty branches based on an empty ball
         bo = xp.branchobj(prob, isoriginal=True)
-        bo.addbranches(N + 1)
+        bo.addbranches((N + 1)**K)
         initial_polytope = create_n_simplex(N) # make it global
+        a_coeff = {}
         for i in range(N + 1):
             # exclude point initial_polytope[i]
             submatrix = np.delete(initial_polytope, i, axis=0)  # Exclude row i
             # derive H-version of facet relaxation
-            a_coeff = up_extension_constraint(submatrix)
-
-            # Here is the difference since we need to assign constraints on the correct ball
-            for j in range(len(a_coeff)):
-                if j == 0:
-                    bo.addrows(i, ['G'], [1], [0, N*K], w_ball_idx, a_coeff[j])
-                else:
-                    dot_products = [np.dot(a_coeff[j], row) for row in submatrix]
-                    if max(dot_products) < 1e-6:
-                        # Negative case; switch 
-                        a_coeff[j] = - a_coeff[j]
-                    bo.addrows(i, ['G'], [0], [0, N*K], w_ball_idx, a_coeff[j])
-            # print('The constraints are added')
+            coeff = up_extension_constraint(submatrix)
+            for j in range(len(coeff)):
+                dot_products = [np.dot(coeff[j], row) for row in submatrix]
+                if max(dot_products) < 1e-6:
+                    # Negative case; switch 
+                    coeff[j] = - coeff[j]
+            a_coeff[i] = coeff
+            # print(a_coeff[i])
+            
+        values = range(N + 1)
+        for combination in itertools.product(values, repeat=K):
+            # first ball with a_coeff[combination[0]]
+            # second ball with a_coeff[combination[1]]
+            # ...
+            # last ball with a_coeff[combination[K-1]]
+            ball_idx = sum([combination[k]*((N+1)**(N-k)) for k in range(K)])
+            for k in range(K):
+                w_ball_idx = np.arange(k*N, (k+1)*N)
+                for j in range(len(a_coeff[combination[k]])):
+                    if j==0:
+                        bo.addrows(ball_idx, ['G'], [1], [0, N*K], w_ball_idx, a_coeff[combination[k]][j])
+                    else:
+                        bo.addrows(ball_idx, ['G'], [0], [0, N*K], w_ball_idx, a_coeff[combination[k]][j])
         bo.setpriority(100) # Explore root node first
         #  A candidate branching object with lowest priority number will always be selected for branching before an object with a higher number.
         return bo
     else:
         # print('Not in the root node')
+        sol = []
+
+        if (prob.attributes.presolvestate & 128) == 0:
+            return branch
+
+        # Retrieve node solution
+        try:
+            prob.getlpsol(x=sol)
+        except:
+            return branch
+    
+        w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+        w_array = split_data(w_sol, K, N)
+        split_index = split_data(w_variables_idxs, K, N)
+        
+        # print('split_index = ', split_index)
+
+        if check_all_balls(w_array):
+            return branch
+    
+        # Check if it is on the root node
+        norms = np.linalg.norm(w_array, axis=-1)
+        # print('Norm = ', norms)
+        # Choose a ball to branch on
+        ball_idx = np.argmin(norms)
+        w_ball_idx = list(split_index[ball_idx])
+        
+        # print('ball_idx  = ', ball_idx)
+
         pi_w_array = [ProjectOnBall(w_j) for w_j in w_array]
         initial_points = data[prob.attributes.currentnode][ball_idx]
         new_matrix = append_zeros_and_ones(initial_points)
+        
+        # print('new_matrix = ', new_matrix)
         # This facet is not full rank (two points are too close)
         if np.linalg.matrix_rank(initial_points, tol=1e-6) < N or np.linalg.matrix_rank(new_matrix, tol=1e-6) != np.linalg.matrix_rank(initial_points, tol=1e-6):
             # print('The E matrix is not in full rank ', data[prob.attributes.currentnode])
             return branch
         
+
         try:
             max_dist = max(data[prob.attributes.currentnode]['distance'])
             if max_dist <= 1e-6:
                 # Do not branch on too close node
                 return branch
         except:
-            print('This node does not contain all data')
-        
-        # if min(prob.attributes.currentnode['distance']) <= 1e-4:
-        #     print('This E matrix pass the test ', data[prob.attributes.currentnode])
+            pass
+            # print('This node does not contain all data')
+
         # create new object with n empty branches
         bo = xp.branchobj(prob, isoriginal=True)
         bo.addbranches(N)
+        # print('Branching object is created')
         for i in range(N):
             submatrix = np.delete(initial_points, i, axis=0)
             extreme_points = np.concatenate((submatrix, [pi_w_array[ball_idx]]), axis=0)
@@ -396,56 +428,53 @@ def cbbranch(prob, data, branch):
 def cbnewnode(prob, data, parentnode, newnode, branch):
     # print('ENTER CBNEWNODE')
     """Callback function to add data of extreme points to each node. The data[node][ball_index] represents the matrix of extreme points with corresponding node and ball"""
-    sol = []
-
-    if (prob.attributes.presolvestate & 128) == 0:
-        return 0
-
-    # Retrieve node solution
-    try:
-        prob.getlpsol(x=sol)
-    except:
-        return 0
     
     # Create empty dict
     data[newnode] = {}
-
-    w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-    w_array = split_data(w_sol, K, N)
-    norms = np.linalg.norm(w_array, axis=-1)
-    ball_idx = np.argmin(norms)
+    # print(newnode)
     
-    # Check if the relaxation is outside the norm
-    if np.any(norms > 1 + 1e-2):
-        print('This relaxation solution is violated the norm constraint... ')
-        print(norms)
-
-    if any(key in data[parentnode] for key in range(K)):
-        # this node is not empty
-        if all(key in data[parentnode] for key in range(K)):
-            # this node contains perfect information
-            initial_polytope = data[parentnode][ball_idx]
-            submatrix = np.delete(initial_polytope, branch, axis=0)
-            pi_w = ProjectOnBall(w_array[ball_idx])
-            for key in data[parentnode].keys():
-                data[newnode][key] = data[parentnode][key]
-            data[newnode][ball_idx] = np.vstack((submatrix, pi_w))
-            
-            # Calculate distance between newnode and parentnode
-            distance = [np.linalg.norm(data[newnode][ball_idx][n] - data[parentnode][ball_idx][n]) for n in range(N)]
-            data[newnode]['distance'] = distance
-            # print('Distance between parentnode and newnode = ', distance)
-        else:
-            # this node is considered as a root node
-            initial_polytope = create_n_simplex(N)
-            for key in data[parentnode].keys():
-                data[newnode][key] = data[parentnode][key]
-            data[newnode][ball_idx] = np.delete(initial_polytope, branch, axis=0)
-            
-    else:
-        # this node is empty
+    if parentnode == 1: # (N+1)^k childnodes
         initial_polytope = create_n_simplex(N)
-        data[newnode][ball_idx] = np.delete(initial_polytope, branch, axis=0)
+        # this node is empty
+        balls = ball_idx_to_combination(branch, N, K)
+        # print('Balls = ', balls)
+        for i in range(len(balls)):
+            data[newnode][i] = np.delete(initial_polytope, balls[i], axis=0)
+        # print('Data of newnode = ', newnode, ' is ', data[newnode])
+    else:
+        # this node is not on level 1
+        sol = []
+
+        if (prob.attributes.presolvestate & 128) == 0:
+            return 0
+
+        # Retrieve node solution
+        try:
+            prob.getlpsol(x=sol)
+        except:
+            return 0
+        
+        w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+        w_array = split_data(w_sol, K, N)
+        norms = np.linalg.norm(w_array, axis=-1)
+        ball_idx = np.argmin(norms)
+        
+        # this node contains perfect information
+        # print('data of the parent node',  parentnode, ' is = ', data[parentnode])
+        initial_polytope = data[parentnode][ball_idx]
+        submatrix = np.delete(initial_polytope, branch, axis=0)
+        pi_w = ProjectOnBall(w_array[ball_idx])
+        # data[newnode] = data[parentnode]
+        for key in data[parentnode].keys():
+            data[newnode][key] = data[parentnode][key]
+        data[newnode][ball_idx] = np.vstack((submatrix, pi_w))
+        # print('data of the new node',  newnode, ' is = ', data[newnode])
+        
+            
+        # Calculate distance between newnode and parentnode
+        distance = [np.linalg.norm(data[newnode][ball_idx][n] - data[parentnode][ball_idx][n]) for n in range(N)]
+        data[newnode]['distance'] = distance
+        # print('Distance between parentnode and newnode = ', distance)
         
     return 0
 
@@ -524,7 +553,7 @@ def solveprob(prob):
     prob.addcbpreintsol(cbchecksol, data, 1)
     prob.addcbchgbranchobject(cbbranch, data, 1)
     prob.addcbnewnode(cbnewnode, data, 1)
-    prob.addcboptnode(nodeOptimal, None, 0)
+    # prob.addcboptnode(nodeOptimal, None, 0)
     # prob.addcbintsol(printsol, None, 0)
     # prob.addcbprenode(preNode, None, 0)
     # prob.addcbnodelpsolved(cbprojectedsol, data, 1)
@@ -544,7 +573,7 @@ def solveprob(prob):
     prob.controls.backtracktie = 1        # In case of ties, select the Earliest created node
 
     
-    prob.controls.timelimit=60
+    prob.controls.timelimit=300
     prob.mipoptimize("")
     
     print("Solution status:", prob.getProbStatusString())
@@ -557,7 +586,7 @@ if __name__ == '__main__':
     solveprob(prob)
     num_nodes = prob.attributes.nodes
     print("Number of nodes in the tree:", num_nodes)
-    opt_sol = prob.getSolution()
-    print("Optimal objective value:", prob.getObjVal())
+    # opt_sol = prob.getSolution()
+    # print("Optimal objective value:", prob.getObjVal())
     
 

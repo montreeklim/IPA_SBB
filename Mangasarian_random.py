@@ -3,8 +3,11 @@ import numpy as np
 from scipy.linalg import null_space
 import itertools
 import time
+import pickle
+import pandas as pd
 
 np.set_printoptions(precision=3, suppress=True)
+# xp.init('C:/Users/montr/anaconda3/Lib/site-packages/xpress/license/community-xpauth.xpr') # license path for laptop
 
 def ball_idx_to_combination(ball_idx, n, k):
     """
@@ -239,7 +242,7 @@ def compute_w_gamma_y(a, x, rows, cols, BigM):
 
     return w, gamma, y
     
-def create_problem(filename = None):
+def create_problem(n_planes = 3, dataset = None):
     """Read the given problem or create simple linear classifier problem."""
 
     # Create a new optimization problem
@@ -248,12 +251,17 @@ def create_problem(filename = None):
     # prob.controls.xslp_presolve = 0
     # prob.presolve()
     global M, N, K, a, BigM
+    
+    M = dataset.shape[0]
+    N = dataset.shape[1]
+    K = n_planes
+    a = dataset
 
     # Read the problem from a file
-    M = 14
-    N = 2
-    K = 3
-    a = np.array([[4.5, 7.1], [4.0, 6.9], [9.3, 8.7], [2.3, 7.1], [5.5, 6.9], [0.0, 1.0], [4.3, 8.5], [4.8, 7.8], [0.0, 0.0], [2.5, 7.1], [7.0, 8.4], [3.4, 7.0], [1.1, 7.0], [9.3, 7.7], [5.5, 7.8], [5.2, 8.5], [7.9, 8.3], [10.0, 10.0], [4.8, 8.2], [8.0, 8.7]])
+    # M = 14
+    # N = 2
+    # K = 3
+    # a = np.array([[4.5, 7.1], [4.0, 6.9], [9.3, 8.7], [2.3, 7.1], [5.5, 6.9], [0.0, 1.0], [4.3, 8.5], [4.8, 7.8], [0.0, 0.0], [2.5, 7.1], [7.0, 8.4], [3.4, 7.0], [1.1, 7.0], [9.3, 7.7], [5.5, 7.8], [5.2, 8.5], [7.9, 8.3], [10.0, 10.0], [4.8, 8.2], [8.0, 8.7]])
 
     h = np.max(a)
     BigM = h*np.sqrt(N)
@@ -321,6 +329,7 @@ def cbchecksol(prob, data, soltype, cutoff):
     
         if check_all_balls(w_array):
             refuse = 0
+            print('The solution is on the ball ', w_sol)
         elif all_non_zero:
             refuse = 1
             w_sol = split_data(sol[min(w_variables_idxs): max(w_variables_idxs) + 1], K, N)
@@ -347,7 +356,7 @@ def cbchecksol(prob, data, soltype, cutoff):
         return (refuse, cutoff)
     
     except Exception as e:
-        print('Exception in cbchecksol:', e)
+        # print('Exception in cbchecksol:', e)
         return (1, cutoff)
 
 def prenode_callback(prob, data):
@@ -433,7 +442,8 @@ def cbbranch(prob, data, branch):
             pass
                 
         # Toss a coin to branch on x with 95%
-        if np.random.random() < 0.95:
+        # always branch IPA
+        if np.random.random() < 1.5:
             data[prob.attributes.currentnode]['branch'] = False
             return branch
         else:
@@ -544,7 +554,7 @@ def solveprob(prob):
     prob.controls.backtrack = 2           # Use Breadth-first backtracking strategy
     prob.controls.backtracktie = 1        # In case of ties, select the Earliest created node
     
-    prob.controls.timelimit=600
+    prob.controls.timelimit=1200
     # prob.controls.maxnode = 500
     
     prob.mipoptimize("")
@@ -552,18 +562,55 @@ def solveprob(prob):
     # print("Solution status:", prob.getProbStatusString())
     
 if __name__ == '__main__':
-    # np.random.seed(123)
     tol = 1e-4
-    # prob = create_problem(filename = 'srncr_20_2_3_2023_ins.dat')
+    np.random.seed(0)
+    # Load the datasets
+    with open("instances_10_2_1.pkl", "rb") as f:
+        datasets = pickle.load(f)
+    num_nodes = []
+    mip_bound = []
+    solve_time = []
+    dataset = datasets[1]
     start_time = time.time()
-    prob = create_problem()
+    prob = create_problem(n_planes = 1, dataset = dataset)
     solveprob(prob)
-    num_nodes = prob.attributes.nodes
-    print("Number of nodes in the tree:", num_nodes)
-    mip_bound = prob.attributes.bestbound
-    print(f"MIP bound from solver: {mip_bound:.3f}")
-    solve_time = time.time()-start_time
-    print(f"Solve time: {solve_time:.3f}")
+    num_nodes.append(prob.attributes.nodes)
+    mip_bound.append(prob.attributes.bestbound)
+    solve_time.append(time.time()-start_time)
+    
+    # Create the DataFrame
+    df = pd.DataFrame({
+        "Objective": mip_bound,
+        "IPA Nodes": num_nodes,
+        "IPA Time": solve_time
+        })
+
+    # Display the DataFrame
+    print(df)
+    
+    # for j in range(2):
+    #     np.random.seed(j)
+    #     num_nodes = []
+    #     mip_bound = []
+    #     solve_time = []
+    #     for i, dataset in enumerate(datasets):
+    #         print('Start to solve instance ', i)
+    #         start_time = time.time()
+    #         prob = create_problem(n_planes = 1, dataset = dataset)
+    #         solveprob(prob)
+    #         num_nodes.append(prob.attributes.nodes)
+    #         mip_bound.append(prob.attributes.bestbound)
+    #         solve_time.append(time.time()-start_time)
+    #     # Create the DataFrame
+    #     df = pd.DataFrame({
+    #         "Objective": mip_bound,
+    #         "IPA Nodes": num_nodes,
+    #         "IPA Time": solve_time
+    #         })
+
+    #     # Display the DataFrame
+    #     print('The results with seed = ', j)
+    #     print(df)
 
 
 

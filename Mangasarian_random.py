@@ -7,6 +7,7 @@ import pickle
 import pandas as pd
 
 np.set_printoptions(precision=3, suppress=True)
+xp.init('C:/Apps/Anaconda3/lib/site-packages/xpress/license/community-xpauth.xpr')
 # xp.init('C:/Users/montr/anaconda3/Lib/site-packages/xpress/license/community-xpauth.xpr') # license path for laptop
 
 def ball_idx_to_combination(ball_idx, n, k):
@@ -177,7 +178,7 @@ def ProjectOnBall(w):
     else:
         # Perform the normalization
         return w / norm_w
-
+    
 def compute_w_gamma_y(a, x, rows, cols, BigM):
     # Reshape the flat list into a 2D array
     matrix = [x[i * cols:(i + 1) * cols] for i in range(rows)]
@@ -224,7 +225,7 @@ def compute_w_gamma_y(a, x, rows, cols, BigM):
         gamma.append(gamma_j[0])  # gamma_j is a 1-element array
 
     # Convert w and gamma back into per-j lists for computation
-    w_per_j = [np.array(w[i * 2:(i + 1) * 2]) for i in range(cols)]
+    w_per_j = [np.array(w[i * N:(i + 1) * N]) for i in range(cols)]
     gamma_per_j = gamma
 
     # Compute y[i] for all rows and columns
@@ -241,6 +242,71 @@ def compute_w_gamma_y(a, x, rows, cols, BigM):
             y[i] += max(0, term1, term2)
 
     return w, gamma, y
+
+
+# def compute_w_gamma_y(a, x, rows, cols, BigM):
+#     # Reshape the flat list into a 2D array
+#     matrix = [x[i * cols:(i + 1) * cols] for i in range(rows)]
+
+#     # Identify which x_ij is 1 for each j
+#     indices_per_j = {}
+#     for j in range(cols):
+#         indices_per_j[j] = [i + 1 for i in range(rows) if matrix[i][j] == 1]
+
+#     # Convert 1-based indices to 0-based and extract subarrays
+#     subarrays_per_j = {}
+#     for j, indices in indices_per_j.items():
+#         zero_based_indices = [idx - 1 for idx in indices]  # Convert to 0-based
+#         subarrays_per_j[j] = a[zero_based_indices]         # Extract rows from `a`
+
+#     B = {}
+#     w = []
+#     gamma = []
+
+#     for j, subarray in subarrays_per_j.items():
+#         n = subarray.shape[0]
+#         if n == 0:  # Handle empty subarrays
+#             continue
+
+#         I = np.eye(n)  # Identity matrix of size n x n
+#         e = np.ones((n, 1))  # Column vector of ones of size n x 1
+
+#         # Compute projection matrix P = I - e e^T / n
+#         P = I - (e @ e.T) / n
+
+#         # Compute the final value: A^T * P * A
+#         B[j] = subarray.T @ P @ subarray
+
+#         # Compute the eigenvalues and eigenvectors of B[j]
+#         eigenvalues, eigenvectors = np.linalg.eigh(B[j])
+
+#         # Smallest eigenvalue and its corresponding eigenvector
+#         smallest_eigenvalue_index = np.argmin(eigenvalues)
+#         w_j = eigenvectors[:, smallest_eigenvalue_index]
+#         gamma_j = (e.T @ subarray @ w_j) / n
+
+#         # Append results to lists
+#         w.extend(w_j)
+#         gamma.append(gamma_j[0])  # gamma_j is a 1-element array
+
+#     # Convert w and gamma back into per-j lists for computation
+#     w_per_j = [np.array(w[i * 2:(i + 1) * 2]) for i in range(cols)]
+#     gamma_per_j = gamma
+
+#     # Compute y[i] for all rows and columns
+#     y = np.zeros(rows)
+#     for i in range(rows):
+#         for j in range(cols):
+#             w_j = w_per_j[j]
+#             gamma_j = gamma_per_j[j]
+#             x_ij = matrix[i][j]  # Binary variable x_ij
+#             if x_ij == 0:
+#                 continue
+#             term1 = w_j.T @ a[i] - gamma_j 
+#             term2 = -w_j.T @ a[i] + gamma_j 
+#             y[i] += max(0, term1, term2)
+
+#     return w, gamma, y
     
 def create_problem(n_planes = 3, dataset = None):
     """Read the given problem or create simple linear classifier problem."""
@@ -291,11 +357,13 @@ def create_problem(n_planes = 3, dataset = None):
     
     # Add norm constraints
     for j in range(K):
-        prob.addConstraint(sum(w[j, i] * w[j, i] for i in range(N)) <= 1)
+        prob.addConstraint(sum(w[j, i] * w[j, i] for i in range(N)) <= 1 )
+        # prob.addConstraint(sum(w[j, i] * w[j, i] for i in range(N)) >= tol )
     
     # set objective
     prob.setObjective(sum(y[i]*y[i] for i in range(M)), sense = xp.minimize)
-    
+    # prob.setObjective(sum(y[i] for i in range(M)), sense = xp.minimize)
+
     global all_variables, w_variables_idxs, gamma_variables_idxs, x_variables_idxs, y_variables_idxs, refuse_sol
     refuse_sol = []
     all_variables = prob.getVariable()
@@ -323,14 +391,21 @@ def cbchecksol(prob, data, soltype, cutoff):
             return (1, cutoff)
 
         w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
+        # y_sol = sol[min(y_variables_idxs): max(y_variables_idxs) + 1]
         w_array = split_data(w_sol, K, N)
         non_zero_check = np.any(np.abs(w_array) > 1e-4, axis=1)
         all_non_zero = np.all(non_zero_check)
     
         if check_all_balls(w_array):
             refuse = 0
-            print('The solution is on the ball ', w_sol)
+            if prob.attributes.lpobjval == 0:
+                print('Refuse ERROR with LP objective = 0')
+                return (1, cutoff)
+                # refuse_sol.append(sol)
+            # print('The solution is on the ball ', w_sol)
+            # print('A feasible solution is found with objective = ', sum([y**2 for y in y_sol]))
         elif all_non_zero:
+            # print('The current node is ', prob.attributes.currentnode)
             refuse = 1
             w_sol = split_data(sol[min(w_variables_idxs): max(w_variables_idxs) + 1], K, N)
             w_norm = np.linalg.norm(w_sol, axis = 1)
@@ -344,14 +419,24 @@ def cbchecksol(prob, data, soltype, cutoff):
             new_gamma = list(new_gamma) if isinstance(new_gamma, np.ndarray) else new_gamma
             x_sol = list(x_sol) if isinstance(x_sol, np.ndarray) else x_sol
             new_y = list(new_y) if isinstance(new_y, np.ndarray) else new_y
-        
-            # new_gamma, new_w, new_y = compute_w_gamma_y(a, x_sol, M, K, BigM)
+
+            # Combine all parts of the new solution
             new_sol = new_w + new_gamma + x_sol + new_y
+            
+            # success = prob.addmipsol(new_sol)
+            # if not success:
+            #     print('Failed to add new solution:', new_sol)
+            # else:
+            #     print('Successfully added new solution.')
+            
+            # refuse_sol.append(new_sol)
 
             if min(w_norm) >= 1e-6:
                 refuse_sol.append(new_sol)
+            # print('New_sol = ', new_sol)
         else:
             refuse = 1
+            # print('Refuse with zero solution')
     
         return (refuse, cutoff)
     
@@ -359,11 +444,86 @@ def cbchecksol(prob, data, soltype, cutoff):
         # print('Exception in cbchecksol:', e)
         return (1, cutoff)
 
+def cbchecksol(prob, data, soltype, cutoff):
+    """Callback function to reject the solution if it is not on the ball and accept otherwise."""
+    try:
+        global BigM, a, tol
+        # Check if a solution is available
+        if (prob.attributes.presolvestate & 128) == 0:
+            print("No solution available in callback.")
+            return (1, 0)
+
+        sol = []
+
+        # Retrieve node solution
+        try:
+            prob.getlpsol(x=sol)
+            print("Solution retrieved in callback.")
+        except Exception as e:
+            print("Failed to retrieve LP solution:", e)
+            return (1, cutoff)
+
+        # Extract variables
+        w_sol = [sol[idx] for idx in w_variables_idxs]
+        y_sol = [sol[idx] for idx in y_variables_idxs]
+
+        # Reshape w_sol into K x N array
+        w_array = split_data(w_sol, K, N)
+
+        # Compute norms and objective
+        norms = np.linalg.norm(w_array, axis=1)
+        objective = sum([y**2 for y in y_sol])
+        print(f"Checking solution: Objective = {objective:.6f}, Norms = {norms}")
+
+        # Check if all w vectors are on the unit ball within tolerance
+        if check_all_balls(w_array):
+            # Additionally, ensure that the objective is not zero or near zero
+            if objective > tol:
+                refuse = 0
+                print('A feasible solution is found with objective = ', objective)
+            else:
+                refuse = 1
+                print('Rejected solution due to zero or near-zero objective.')
+        else:
+            refuse = 1
+            print('Rejected solution because not all w vectors are on the unit ball.')
+
+        if refuse:
+            # Handle refused solutions as per your existing logic
+            if np.all(np.abs(w_array) > 1e-4):
+                w_norm = np.linalg.norm(w_array, axis=1)
+                x_sol = [sol[idx] for idx in x_variables_idxs]
+                new_w, new_gamma, new_y = compute_w_gamma_y(a, x_sol, M, K, BigM)
+
+                # Ensure all variables are Python lists
+                new_w = list(new_w) if isinstance(new_w, np.ndarray) else new_w
+                new_gamma = list(new_gamma) if isinstance(new_gamma, np.ndarray) else new_gamma
+                x_sol = list(x_sol) if isinstance(x_sol, np.ndarray) else x_sol
+                new_y = list(new_y) if isinstance(new_y, np.ndarray) else new_y
+
+                # Combine all parts of the new solution
+                new_sol = new_w + new_gamma + x_sol + new_y
+
+                refuse_sol.append(new_sol)
+                print('Added new refused solution.')
+            else:
+                print('Refused solution due to zero norms.')
+
+        return (refuse, cutoff)
+
+    except Exception as e:
+        print('Exception in cbchecksol:', e)
+        return (1, cutoff)
+
+
+
 def prenode_callback(prob, data):
+    # print('ENTER PRENODE CALLBACK')
     global refuse_sol
+    # print('Refuse_sol = ', refuse_sol)
         
     if len(refuse_sol) > 0:
-        # print('There are some refused point to be added')
+        print('There are some refused point to be added')
         for sol in refuse_sol:
             # add mip sol
             prob.addmipsol(sol)
@@ -407,17 +567,20 @@ def cbbranch(prob, data, branch):
                     bo.addrows(ball_idx, ['G'], [rhs_value], [0, N*K], w_ball_idx, a_coeff[combination[k]][j])
                 extreme_points[ball_idx][k] = submatrix[combination[k]]
         bo.setpriority(100)
+        # print('The first layer is added')
         return bo
     else:
         sol = []
 
         if (prob.attributes.presolvestate & 128) == 0:
+            # print('Presolve')
             return branch
 
         # Retrieve node solution
         try:
             prob.getlpsol(x=sol)
         except:
+            # print('Cannot get LP sol')
             return branch
         
         w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
@@ -425,6 +588,7 @@ def cbbranch(prob, data, branch):
         split_index = split_data(w_variables_idxs, K, N)
 
         if check_all_balls(w_array):
+            # print('The solution is on ball', w_array)
             return branch
         
         # Find branching varaible with the most smallest norm
@@ -436,14 +600,16 @@ def cbbranch(prob, data, branch):
         try:
             max_dist = max(data[prob.attributes.currentnode]['distance'])
             if max_dist <= 1e-6:
+                # print('The node is too close to parent node')
                 # Do not branch on too close node
                 return branch
         except:
             pass
                 
-        # Toss a coin to branch on x with 95%
-        # always branch IPA
-        if np.random.random() < 1.5:
+        # Toss a coin to branch on x with 95% (0.95)
+        # always spatial branching < 0 (IPA)
+        # always branch on integer random < 1 (Mangasarian)
+        if np.random.random() < 0:
             data[prob.attributes.currentnode]['branch'] = False
             return branch
         else:
@@ -452,9 +618,11 @@ def cbbranch(prob, data, branch):
         pi_w_array = [ProjectOnBall(w_j) for w_j in w_array]
         initial_points = data[prob.attributes.currentnode][ball_idx]
         new_matrix = append_zeros_and_ones(initial_points)
+        # print('New matrix ')
         # This facet is not full rank (two points are too close)
         if np.linalg.matrix_rank(initial_points, tol=1e-6) < N or np.linalg.matrix_rank(new_matrix, tol=1e-6) != np.linalg.matrix_rank(initial_points, tol=1e-6):
             # print('The E matrix is not in full rank ', data[prob.attributes.currentnode])
+            # print('The matrix is too close')
             return branch
             
         # create new object with n empty branches
@@ -466,7 +634,7 @@ def cbbranch(prob, data, branch):
             try:
                 a_coeff = up_extension_constraint(extreme_points)
             except:
-                print('Cannot obtain coefficient for constraints')
+                # print('Cannot obtain coefficient for constraints')
                 return branch
             for j in range(len(a_coeff)):
                 if j == 0:
@@ -529,18 +697,17 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
 
 
 
-
 def solveprob(prob):
     """Function to solve the problem with registered callback functions."""
 
     data = {}
     data[1] = {}
-    prob.addcbpreintsol(cbchecksol, data, 1)
-    prob.addcbchgbranchobject(cbbranch, data, 1)
-    prob.addcbnewnode(cbnewnode, data, 1)
+    prob.addcbpreintsol(cbchecksol, data, 2)
+    prob.addcbchgbranchobject(cbbranch, data, 2)
+    prob.addcbnewnode(cbnewnode, data, 2)
     prob.addcbprenode(prenode_callback, data, 1)
-    prob.controls.outputlog = 0
-    # prob.controls.presolve = 0
+    # prob.controls.outputlog = 0
+    prob.controls.presolve = 0
     # prob.controls.dualstrategy = 7
     # prob.controls.HEUREMPHASIS = 0
 
@@ -565,14 +732,14 @@ if __name__ == '__main__':
     tol = 1e-4
     np.random.seed(0)
     # Load the datasets
-    with open("instances_10_2_1.pkl", "rb") as f:
+    with open("instances_10_2_2.pkl", "rb") as f:
         datasets = pickle.load(f)
     num_nodes = []
     mip_bound = []
     solve_time = []
     dataset = datasets[1]
     start_time = time.time()
-    prob = create_problem(n_planes = 1, dataset = dataset)
+    prob = create_problem(n_planes = 2, dataset = dataset)
     solveprob(prob)
     num_nodes.append(prob.attributes.nodes)
     mip_bound.append(prob.attributes.bestbound)
@@ -588,7 +755,7 @@ if __name__ == '__main__':
     # Display the DataFrame
     print(df)
     
-    # for j in range(2):
+    # for j in range(1):
     #     np.random.seed(j)
     #     num_nodes = []
     #     mip_bound = []
@@ -596,7 +763,7 @@ if __name__ == '__main__':
     #     for i, dataset in enumerate(datasets):
     #         print('Start to solve instance ', i)
     #         start_time = time.time()
-    #         prob = create_problem(n_planes = 1, dataset = dataset)
+    #         prob = create_problem(n_planes = 2, dataset = dataset)
     #         solveprob(prob)
     #         num_nodes.append(prob.attributes.nodes)
     #         mip_bound.append(prob.attributes.bestbound)

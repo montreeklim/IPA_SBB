@@ -1,6 +1,7 @@
 import xpress as xp
 import numpy as np
 from scipy.linalg import null_space
+from scipy.sparse.linalg import eigsh
 import itertools
 import time
 import pickle
@@ -10,6 +11,7 @@ import re  # For extracting numbers from filenames
 np.set_printoptions(precision=3, suppress=True)
 xp.init('C:/Apps/Anaconda3/Lib/site-packages/xpress/license/community-xpauth.xpr') # license path for desktop
 # xp.init('C:/Users/montr/anaconda3/Lib/site-packages/xpress/license/community-xpauth.xpr') # license path for laptop
+    
 
 # Function to extract the last number from the filename (used for n_planes)
 def get_n_planes_from_filename(filename):
@@ -239,6 +241,7 @@ def compute_w_gamma_y(a, x, rows, cols, BigM):
     '''
     # Reshape the flat list into a 2D array
     matrix = [x[i * cols:(i + 1) * cols] for i in range(rows)]
+    # print(matrix)
 
     # Identify which x_ij is 1 for each j
     indices_per_j = {}
@@ -271,11 +274,20 @@ def compute_w_gamma_y(a, x, rows, cols, BigM):
 
         # Compute the eigenvalues and eigenvectors of B[j]
         eigenvalues, eigenvectors = np.linalg.eigh(B[j])
+        # print('Eigenvalue from numpy ', eigenvalues)
+        # Use scipy.sparse.eigsh to find the smallest eigenvector
+        # eigenvalues, eigenvectors = eigsh(B[j], k=1, which = 'SA')
+        # print('Eigenvalue from scipy ', eigenvalues)
+        # eigenvalues, eigenvectors = np.linalg.eigh(B[j])
 
         # Smallest eigenvalue and its corresponding eigenvector
         smallest_eigenvalue_index = np.argmin(eigenvalues)
         w_j = eigenvectors[:, smallest_eigenvalue_index]
+        # w_j = eigenvectors
+        # print(w_j)
         gamma_j = (e.T @ subarray @ w_j) / n
+        
+        # print(w_j, gamma_j)
 
         # Append results to lists
         w.extend(w_j)
@@ -284,6 +296,7 @@ def compute_w_gamma_y(a, x, rows, cols, BigM):
     # Convert w and gamma back into per-j lists for computation
     w_per_j = [np.array(w[i * N:(i + 1) * N]) for i in range(cols)]
     gamma_per_j = gamma
+
 
     # Compute y[i] for all rows and columns
     y = np.zeros(rows)
@@ -294,10 +307,14 @@ def compute_w_gamma_y(a, x, rows, cols, BigM):
             x_ij = matrix[i][j]  # Binary variable x_ij
             if x_ij == 0:
                 continue
+            # term1 = (w_j.T @ a[i] - gamma_j)[0]
+            # term2 = (-w_j.T @ a[i] + gamma_j)[0]
+            # y[i] += max(0, term1, term2)
+
             term1 = w_j.T @ a[i] - gamma_j 
             term2 = -w_j.T @ a[i] + gamma_j 
             y[i] += max(0, term1, term2)
-
+            
     return w, gamma, y
     
 def create_problem(n_planes = 3, dataset = None):
@@ -341,12 +358,13 @@ def create_problem(n_planes = 3, dataset = None):
     # set objective
     prob.setObjective(xp.Sum(y[i]*y[i] for i in range(M)), sense=xp.minimize)
 
-    global all_variables, w_variables_idxs, gamma_variables_idxs, x_variables_idxs, y_variables_idxs, refuse_sol
+    global all_variables, w_variables_idxs, gamma_variables_idxs, x_variables_idxs, y_variables_idxs, refuse_sol, x_vars
     refuse_sol = []
     all_variables = prob.getVariable()
     w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
     gamma_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("gamma")]
     x_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("x")]
+    # x_vars = [var for ind, var in enumerate(all_variables) if var.name.startswith("x")]
     y_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("y")]
     # print('W indices = ', w_variables_idxs)
     # print('Gamma indices = ', gamma_variables_idxs)
@@ -380,20 +398,20 @@ def cbchecksol(prob, data, soltype, cutoff):
         elif all_non_zero:
             refuse = 1
             # Recompute w, gamma, y based on the current x_sol
-            x_sol = sol[min(x_variables_idxs): max(x_variables_idxs) + 1]
-            new_w, new_gamma, new_y = compute_w_gamma_y(a, x_sol, M, K, BigM)
+            # x_sol = sol[min(x_variables_idxs): max(x_variables_idxs) + 1]
+            # new_w, new_gamma, new_y = compute_w_gamma_y(a, x_sol, M, K, BigM)
 
-            # Convert to lists if needed
-            new_w = list(np.array(new_w).flatten()) if isinstance(new_w, np.ndarray) else new_w
-            new_gamma = list(new_gamma) if isinstance(new_gamma, np.ndarray) else new_gamma
-            x_sol = list(x_sol) if isinstance(x_sol, np.ndarray) else x_sol
-            new_y = list(new_y) if isinstance(new_y, np.ndarray) else new_y
+            # # Convert to lists if needed
+            # new_w = list(np.array(new_w).flatten()) if isinstance(new_w, np.ndarray) else new_w
+            # new_gamma = list(new_gamma) if isinstance(new_gamma, np.ndarray) else new_gamma
+            # x_sol = list(x_sol) if isinstance(x_sol, np.ndarray) else x_sol
+            # new_y = list(new_y) if isinstance(new_y, np.ndarray) else new_y
 
-            new_sol = new_w + new_gamma + x_sol + new_y
+            # new_sol = new_w + new_gamma + x_sol + new_y
 
-            w_norm = np.linalg.norm(w_array, axis=1)
-            if min(w_norm) >= 1e-6:
-                refuse_sol.append(new_sol)
+            # w_norm = np.linalg.norm(w_array, axis=1)
+            # if min(w_norm) >= 1e-6:
+            #     refuse_sol.append(new_sol)
         else:
             refuse = 1
 
@@ -410,6 +428,7 @@ def prenode_callback(prob, data):
         for sol in refuse_sol:
             prob.addmipsol(sol)
         refuse_sol = []
+    
     return 0
 
 def cbbranch(prob, data, branch):
@@ -504,9 +523,9 @@ def cbbranch(prob, data, branch):
             # print('best_solution = ', best_solution)
             mip_gap = abs((best_solution - dual_bound) / best_solution)
 
-        rand = np.random.random()
+        # rand = np.random.random()
         # toss a coin to branch on x or w
-        if rand < max(mip_gap, 1-mip_gap):
+        if rng_branch.random() < max(mip_gap, 1-mip_gap):
             data[prob.attributes.currentnode]['branch'] = False
             return branch
         else:
@@ -538,6 +557,7 @@ def cbbranch(prob, data, branch):
                     bo.addrows(i, ['G'], [0], [0, N*K], w_ball_idx, a_coeff[j])
         # print('User branching object spatial branching on w')
         return bo
+
 
     return branch
 
@@ -575,19 +595,150 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
 
     return 0
 
+def cbnodelpsolved(prob, data):
+    # rng_heuristic.random() < 0 === Mangasarian
+    # rng_heuristic.random() < 0.1 === 10% calculate new sol
+    # rng_heuristic.random() < 1 === always
+    if prob.attributes.currentnode >= (N+1)**(K+1) and rng_heuristic.random() < 1:
+        try:
+            # print('ENTER TRY')
+            sol = prob.getCallbackSolution(prob.getVariable())
+            x_sol = sol[min(x_variables_idxs): max(x_variables_idxs)+1]
+            x_sol = split_data(x_sol, M, K)
+            # print('x = ', x_sol)
+            # print('Obtain x_sol')
+            
+            # store x sol and check if it is in data
+            # if x_sol in data['x_sol']:
+            #     return 0
+            # else:
+            #     data[x_sol].append(x_sol)
+            # print('Obtain x_sol')
+        
+            # to find which hyperplane point i belong to
+            # return -1 if unassigned
+            mask = x_sol == 1
+            # print('Mask = ', mask)
+            result = np.where(mask.any(axis=1), np.argmax(mask, axis=1), -1)
+            # print('Obtain result')
+            # print('Result = ', result)
+        
+            # iterate 0 to K-1 to create hyperplane for each assigned points 
+            w = []
+            gamma = []
+            for i in range(K):
+                # print('i = ', i)
+                mask = result == i
+                # print(mask)
+                # sub_x = x_sol[mask]
+                sub_a = a[mask]
+                # find a hyperplane
+                n = sub_a.shape[0]
+                if n == 0:
+                    return 0
+                I = np.eye(n)  # Identity matrix of size n x n
+                e = np.ones((n, 1))  # Column vector of ones of size n x 1
+                # print('Code works here')
+
+                # Compute projection matrix P = I - e e^T / n
+                P = I - (e @ e.T) / n
+                # Compute the final value: A^T * P * A
+                B = sub_a.T @ P @ sub_a
+                # print('Code works here')
+                # Compute the eigenvalues and eigenvectors of B[j]
+                eigenvalues, eigenvectors = np.linalg.eigh(B)
+                # Smallest eigenvalue and its corresponding eigenvector
+                smallest_eigenvalue_index = np.argmin(eigenvalues)
+                # print('Code works here')
+                w_j = eigenvectors[:, smallest_eigenvalue_index]
+                gamma_j = (e.T @ sub_a @ w_j) / n
+                # print(w_j)
+                # print(gamma_j)
+                w.extend(w_j)
+                gamma.append(gamma_j[0])  # gamma_j is a 1-element array
+                # print('Code works here')
+                # print(w)
+            
+            # print('Outside the for loop')
+            
+            # print(w)
+            w = np.array(w).reshape(K, N) # change to N K if not correct
+            # print('Code works here')
+            gamma = np.array(gamma)
+            # print('Code works here')
+            
+            # Now we have initial hyperplanes
+            # assign unassigned points
+            mask = result < 0
+            unassign_points = a[mask]
+            # print('Calculate unassigned points')
+            previous_assignment = np.zeros(unassign_points.shape[0])
+            
+            
+            max_iter = 20
+            for iteration in range(max_iter):
+                dot_products = np.dot(unassign_points, w.T)
+                distances = np.abs(dot_products - gamma)  # Shape (M, K)
+                assignments = np.argmin(distances, axis=1)
+                result[mask] = assignments
+        
+                # reconstruct x
+                x = np.zeros((M, K), dtype=int)
+                rows = np.arange(M)
+                x[rows, result] = 1
+                x = x.flatten()
+
+                # recompute hyperplane
+                w, gamma, y = compute_w_gamma_y(a, x, M, K, BigM)
+
+                if np.array_equal(previous_assignment, assignments):
+                    # print('Optimal hyperplane with distances = ', sum([ele**2 for ele in y]))
+                    break
+                else:
+                    # print('Update hyperplane with distances = ', sum([ele**2 for ele in y]))
+                    previous_assignment = assignments.copy()
+                    # print('Update hyperplane with distances = ', sum([ele**2 for ele in y]))
+                
+                w = np.array(w).reshape(K, N)
+                gamma = np.array(gamma)
+            # if it reach max_iter we need to convert w into list
+            # if iteration == max_iter-1:
+            # w = w.flatten().tolist()
+            # gamma = [float(val[0]) if isinstance(val, np.ndarray) else float(val) for val in gamma]
+
+            # gamma = gamma.tolist()
+            # print('Code works here')
+            # print('W out of loop ', w)
+            
+            # add the final mipsol
+            new_sol = list(w) + list(gamma) + list(x) + list(y)
+            # print('New sol = ', new_sol)
+            # print('Length = ', len(new_sol))
+            # print('GET NEW SOL')
+            refuse_sol.append(new_sol)
+            
+            return 0
+        except:
+            return 0
+
 def solveprob(prob):
     data = {}
     data[1] = {}
+    data['x_sol']= []
     prob.addcbpreintsol(cbchecksol, data, 2)
     prob.addcbchgbranchobject(cbbranch, data, 2)
     prob.addcbnewnode(cbnewnode, data, 2)
     prob.addcbprenode(prenode_callback, data, 1)
+    prob.addcbnodelpsolved(cbnodelpsolved, data, 2)
     prob.controls.outputlog = 0
     # prob.controls.presolve = 0
     prob.controls.branchchoice = 1
     prob.controls.backtrack = 2
     prob.controls.backtracktie = 1
     prob.controls.timelimit = 900
+    prob.controls.randomseed = 42
+    # prob.controls.threads = 1
+    # prob.controls.maxnode = 500
 
     prob.mipoptimize("")
     
@@ -634,222 +785,234 @@ def create_problem_defaults(n_planes = 3, dataset = None):
     
     return prob
 
-if __name__ == '__main__':
-    tol = 1e-4
-    # List of dataset filenames
-    datasets_filenames = [
-        "LowDim.pkl",
-    ]
-
-    for filename in datasets_filenames:
-        print(f"Processing dataset file: {filename}")
-
-        # Load the dataset
-        with open(filename, "rb") as f:
-            datasets_dict = pickle.load(f)
-        print(f"Loaded {len(datasets_dict)} datasets from '{filename}'.\n")
-        # count = 0
-        combined_data = []
-        # Iterate over each (m, n, k) tuple and its corresponding data
-        for key_tuple, data_array in datasets_dict.items():
-            # if count >= 3:
-            #     break
-            # count += 1
-            m, n, k = key_tuple
-            print(f"Processing dataset with parameters (m, n, k) = ({m}, {n}, {k})")
-
-            # Initialize lists to store DataFrames for each scenario
-            dfs = []
-
-            # Run experiments for three different configurations/scenarios
-            for scenario in range(3):  # Adjust the number of scenarios if needed
-                print(f"--- Scenario {scenario + 1} ---")
-                np.random.seed(scenario)  # Ensure reproducibility per scenario
-                num_nodes = []
-                mip_bound = []
-                solve_time = []
-
-                start_time = time.time()
-
-                # Create and solve the problem for the current scenario
-                prob = create_problem(n_planes=k, dataset=data_array)
-                solveprob(prob)
-
-                nodes = prob.attributes.nodes
-                bestbound = prob.attributes.bestbound
-                solve_time = round(time.time() - start_time, 3)
-                num_nodes.append(nodes)
-                mip_bound.append(bestbound)
-
-                # Create the DataFrame for this scenario
-                df = pd.DataFrame({
-                    "Objective": mip_bound,
-                    "Nodes": num_nodes,      # Renamed from "IPA Nodes" to "Nodes"
-                    "Time": solve_time       # Renamed from "IPA Time" to "Time"
-                })
-                dfs.append(df)
-                print(f"Results for Scenario {scenario + 1}:\n{df}\n")
-
-            # Initialize lists to store default experiment results
-            default_objective = []
-            default_nodes = []
-            default_time = []
-
-            start_time = time.time()
-
-            # Create and solve the default problem
-            prob_default = create_problem_defaults(n_planes=k, dataset=data_array)
-            prob_default.controls.timelimit = 900 
-            prob_default.optimize('x')
-
-            default_bestbound = prob_default.attributes.bestbound
-            default_nodes_count = prob_default.attributes.nodes
-            default_elapsed_time = round(time.time() - start_time, 3)
-            default_objective.append(default_bestbound)
-            default_nodes.append(default_nodes_count)
-            default_time.append(default_elapsed_time)
-
-            # Calculate averages across scenarios
-            average_nodes = []
-            average_time = []
-            for i in range(len(dfs[0])):
-                nodes_values = [
-                    dfs[0]["Nodes"][i] if dfs[0]["Nodes"][i] is not None else np.nan,
-                    dfs[1]["Nodes"][i] if dfs[1]["Nodes"][i] is not None else np.nan,
-                    dfs[2]["Nodes"][i] if dfs[2]["Nodes"][i] is not None else np.nan
-                ]
-                times_values = [
-                    dfs[0]["Time"][i] if dfs[0]["Time"][i] is not None else np.nan,
-                    dfs[1]["Time"][i] if dfs[1]["Time"][i] is not None else np.nan,
-                    dfs[2]["Time"][i] if dfs[2]["Time"][i] is not None else np.nan
-                ]
-
-                # Compute mean, ignoring NaN
-                avg_nodes = int(np.nanmean(nodes_values)) if not np.all(np.isnan(nodes_values)) else None
-                avg_time = round(np.nanmean(times_values), 3) if not np.all(np.isnan(times_values)) else None
-
-                average_nodes.append(avg_nodes)
-                average_time.append(avg_time)
-
-            # Combine results into a single DataFrame for output
-            for i in range(len(dfs[0])):
-                combined_data.append([
-                    m,  # m parameter
-                    n,  # n parameter
-                    k,  # k parameter
-                    # Scenario 1
-                    dfs[0].loc[i, "Objective"], dfs[0].loc[i, "Nodes"], dfs[0].loc[i, "Time"],
-                    # Scenario 2
-                    dfs[1].loc[i, "Objective"], dfs[1].loc[i, "Nodes"], dfs[1].loc[i, "Time"],
-                    # Scenario 3
-                    dfs[2].loc[i, "Objective"], dfs[2].loc[i, "Nodes"], dfs[2].loc[i, "Time"],
-                    # Averages
-                    average_nodes[i], average_time[i],
-                    # Default Experiment
-                    default_objective[i], default_nodes[i], default_time[i]
-                ])
-            
-
-
-        # Create a nicely formatted DataFrame without the "Instance" column
-        formatted_df = pd.DataFrame(combined_data, columns=[
-            "m", "n", "k",  # Dataset parameters
-            # Scenario 1
-            "1 - Objective", "1 - Nodes", "1 - Time",
-            # Scenario 2
-            "2 - Objective", "2 - Nodes", "2 - Time",
-            # Scenario 3
-            "3 - Objective", "3 - Nodes", "3 - Time",
-            # Averages
-            "Average Nodes", "Average Time",
-            # Default Experiment
-            "Default - Objective", "Default - Nodes", "Default - Time"
-        ])
-
-        # Generate output filename based on (m, n, k)
-        output_filename = "results_low_dim.xlsx"
-        # output_filename = "results_high_dim.xlsx"
-        formatted_df.to_excel(output_filename, index=False)
-        print(f"Results saved to '{output_filename}'.\n")
-
-
 # if __name__ == '__main__':
 #     tol = 1e-4
 #     # List of dataset filenames
 #     datasets_filenames = [
-#         "instances_10_2_2.pkl",
-#         "instances_10_2_3.pkl",
-#         # "instances_12_2_3.pkl",
-#         "instances_14_2_3.pkl",
-#         "instances_12_3_2.pkl"
-#         ]
+#         "HighDim.pkl",
+#     ]
 
 #     for filename in datasets_filenames:
-#         print(f"Processing dataset: {filename}")
+#         print(f"Processing dataset file: {filename}")
 
 #         # Load the dataset
 #         with open(filename, "rb") as f:
-#             datasets = pickle.load(f)
-
-#         # Extract n_planes from the filename
-#         n_planes = get_n_planes_from_filename(filename)
-#         print(f"Using n_planes = {n_planes}")
-
-#         # Initialize lists to store DataFrames for each scenario
-#         dfs = []
-
-#         # Run experiments for three different configurations/scenarios
-#         for scenario in range(3):  # Adjust the number of scenarios if needed
-#             np.random.seed(scenario)
-#             num_nodes = []
-#             mip_bound = []
-#             solve_time = []
-
-#             for i, dataset in enumerate(datasets):
-#                 print(f"Scenario {scenario}, solving instance {i}")
-#                 start_time = time.time()
-#                 prob = create_problem(n_planes=n_planes, dataset=dataset)
-#                 solveprob(prob)
-#                 num_nodes.append(prob.attributes.nodes)
-#                 mip_bound.append(prob.attributes.bestbound)
-#                 solve_time.append(time.time() - start_time)
-
-#             # Create the DataFrame for this scenario
-#             df = pd.DataFrame({
-#                 "Objective": mip_bound,
-#                 "IPA Nodes": num_nodes,
-#                 "IPA Time": solve_time
-#             })
-#             dfs.append(df)
-#             print(f"Results for Scenario {scenario}:")
-#             print(df)
-
-#         # Calculate averages
-#         average_nodes = [int(np.mean([dfs[0]["IPA Nodes"][i], dfs[1]["IPA Nodes"][i], dfs[2]["IPA Nodes"][i]])) for i in range(len(dfs[0]))]
-#         average_time = [round(np.mean([dfs[0]["IPA Time"][i], dfs[1]["IPA Time"][i], dfs[2]["IPA Time"][i]]), 3) for i in range(len(dfs[0]))]
-
-#         # Combine results into a single DataFrame for output
+#             datasets_dict = pickle.load(f)
+#         print(f"Loaded {len(datasets_dict)} datasets from '{filename}'.\n")
+#         # count = 0
 #         combined_data = []
-#         for i in range(len(dfs[0])):
-#             combined_data.append([
-#                 i,  # Instance
-#                 dfs[0].loc[i, "Objective"], dfs[0].loc[i, "IPA Nodes"], dfs[0].loc[i, "IPA Time"],  # Scenario 1
-#                 dfs[1].loc[i, "Objective"], dfs[1].loc[i, "IPA Nodes"], dfs[1].loc[i, "IPA Time"],  # Scenario 2
-#                 dfs[2].loc[i, "Objective"], dfs[2].loc[i, "IPA Nodes"], dfs[2].loc[i, "IPA Time"],  # Scenario 3
-#                 average_nodes[i], average_time[i]  # Averages
-#             ])
+#         # Iterate over each (m, n, k) tuple and its corresponding data
+#         for key_tuple, data_array in datasets_dict.items():
+#             # if count >= 3:
+#             #     break
+#             # count += 1
+#             m, n, k = key_tuple
+#             print(f"Processing dataset with parameters (m, n, k) = ({m}, {n}, {k})")
 
-#         # Create a nicely formatted DataFrame
+#             # Initialize lists to store DataFrames for each scenario
+#             dfs = []
+
+#             # Run experiments for three different configurations/scenarios
+#             for scenario in range(3):  # Adjust the number of scenarios if needed
+#                 print(f"--- Scenario {scenario + 1} ---")
+#                 np.random.seed(scenario)  # Ensure reproducibility per scenario
+#                 num_nodes = []
+#                 mip_bound = []
+#                 solve_time = []
+
+#                 start_time = time.time()
+
+#                 # Create and solve the problem for the current scenario
+#                 prob = create_problem(n_planes=k, dataset=data_array)
+#                 solveprob(prob)
+
+#                 nodes = prob.attributes.nodes
+#                 bestbound = prob.attributes.bestbound
+#                 solve_time = round(time.time() - start_time, 3)
+#                 num_nodes.append(nodes)
+#                 mip_bound.append(bestbound)
+
+#                 # Create the DataFrame for this scenario
+#                 df = pd.DataFrame({
+#                     "Objective": mip_bound,
+#                     "Nodes": num_nodes,      # Renamed from "IPA Nodes" to "Nodes"
+#                     "Time": solve_time       # Renamed from "IPA Time" to "Time"
+#                 })
+#                 dfs.append(df)
+#                 print(f"Results for Scenario {scenario + 1}:\n{df}\n")
+
+#             # Initialize lists to store default experiment results
+#             # default_objective = []
+#             # default_nodes = []
+#             # default_time = []
+
+#             # start_time = time.time()
+
+#             # # Create and solve the default problem
+#             # prob_default = create_problem_defaults(n_planes=k, dataset=data_array)
+#             # prob_default.controls.timelimit = 900 
+#             # prob_default.optimize('x')
+
+#             # default_bestbound = prob_default.attributes.bestbound
+#             # default_nodes_count = prob_default.attributes.nodes
+#             # default_elapsed_time = round(time.time() - start_time, 3)
+#             # default_objective.append(default_bestbound)
+#             # default_nodes.append(default_nodes_count)
+#             # default_time.append(default_elapsed_time)
+
+#             # Calculate averages across scenarios
+#             average_nodes = []
+#             average_time = []
+#             for i in range(len(dfs[0])):
+#                 nodes_values = [
+#                     dfs[0]["Nodes"][i] if dfs[0]["Nodes"][i] is not None else np.nan,
+#                     dfs[1]["Nodes"][i] if dfs[1]["Nodes"][i] is not None else np.nan,
+#                     dfs[2]["Nodes"][i] if dfs[2]["Nodes"][i] is not None else np.nan
+#                 ]
+#                 times_values = [
+#                     dfs[0]["Time"][i] if dfs[0]["Time"][i] is not None else np.nan,
+#                     dfs[1]["Time"][i] if dfs[1]["Time"][i] is not None else np.nan,
+#                     dfs[2]["Time"][i] if dfs[2]["Time"][i] is not None else np.nan
+#                 ]
+
+#                 # Compute mean, ignoring NaN
+#                 avg_nodes = int(np.nanmean(nodes_values)) if not np.all(np.isnan(nodes_values)) else None
+#                 avg_time = round(np.nanmean(times_values), 3) if not np.all(np.isnan(times_values)) else None
+
+#                 average_nodes.append(avg_nodes)
+#                 average_time.append(avg_time)
+
+#             # Combine results into a single DataFrame for output
+#             for i in range(len(dfs[0])):
+#                 combined_data.append([
+#                     m,  # m parameter
+#                     n,  # n parameter
+#                     k,  # k parameter
+#                     # Scenario 1
+#                     dfs[0].loc[i, "Objective"], dfs[0].loc[i, "Nodes"], dfs[0].loc[i, "Time"],
+#                     # Scenario 2
+#                     dfs[1].loc[i, "Objective"], dfs[1].loc[i, "Nodes"], dfs[1].loc[i, "Time"],
+#                     # Scenario 3
+#                     dfs[2].loc[i, "Objective"], dfs[2].loc[i, "Nodes"], dfs[2].loc[i, "Time"],
+#                     # Averages
+#                     average_nodes[i], average_time[i]
+#                     # Default Experiment
+#                     # default_objective[i], default_nodes[i], default_time[i]
+#                 ])
+            
+
+
+#         # Create a nicely formatted DataFrame without the "Instance" column
 #         formatted_df = pd.DataFrame(combined_data, columns=[
-#             "Instance",
-#             "Scenario 1 - Objective", "Scenario 1 - IPA Nodes", "Scenario 1 - IPA Time",
-#             "Scenario 2 - Objective", "Scenario 2 - IPA Nodes", "Scenario 2 - IPA Time",
-#             "Scenario 3 - Objective", "Scenario 3 - IPA Nodes", "Scenario 3 - IPA Time",
+#             "m", "n", "k",  # Dataset parameters
+#             # Scenario 1
+#             "1 - Objective", "1 - Nodes", "1 - Time",
+#             # Scenario 2
+#             "2 - Objective", "2 - Nodes", "2 - Time",
+#             # Scenario 3
+#             "3 - Objective", "3 - Nodes", "3 - Time",
+#             # Averages
 #             "Average Nodes", "Average Time"
+#             # Default Experiment
+#             # "Default - Objective", "Default - Nodes", "Default - Time"
 #         ])
 
-#         # Generate output filename
-#         # output_filename = "results_bell_curve.xlsx"
-#         output_filename = f"results_curve_{filename.split('.')[0].split('_', 1)[1]}.xlsx"  # e.g., results_10_2_3.xlsx
+#         # Generate output filename based on (m, n, k)
+#         output_filename = "results_HighDim.xlsx"
+#         # output_filename = "results_high_dim.xlsx"
 #         formatted_df.to_excel(output_filename, index=False)
-#         print(f"Results saved to {output_filename}\n")
+#         print(f"Results saved to '{output_filename}'.\n")
+
+
+if __name__ == '__main__':
+    tol = 1e-4
+    # List of dataset filenames
+    datasets_filenames = [
+        # "instances_10_2_2.pkl",
+        "instances_10_2_3.pkl",
+        # "instances_12_2_3.pkl",
+        # "instances_14_2_3.pkl"
+        # "instances_12_3_2.pkl"
+        ]
+
+    for filename in datasets_filenames:
+        print(f"Processing dataset: {filename}")
+
+        # Load the dataset
+        with open(filename, "rb") as f:
+            datasets = pickle.load(f)
+
+        # Extract n_planes from the filename
+        n_planes = get_n_planes_from_filename(filename)
+        print(f"Using n_planes = {n_planes}")
+
+        # Initialize lists to store DataFrames for each scenario
+        dfs = []
+
+        # Run experiments for three different configurations/scenarios
+        for scenario in range(3):  # Adjust the number of scenarios if needed
+            # np.random.seed(scenario)
+            global rng_branch, rng_heuristic
+            rng_branch = np.random.default_rng(seed=42 + scenario)
+            rng_heuristic = np.random.default_rng(seed=123 + scenario)
+            num_nodes = []
+            mip_bound = []
+            solve_time = []
+            
+            # # Test one instance
+            # dataset = datasets[0]
+            # prob = create_problem(n_planes=n_planes, dataset=dataset)
+            # solveprob(prob)
+
+            for i, dataset in enumerate(datasets):
+                print(f"Scenario {scenario}, solving instance {i}")
+                start_time = time.time()
+                prob = create_problem(n_planes=n_planes, dataset=dataset)
+                solveprob(prob)
+                num_nodes.append(prob.attributes.nodes)
+                mip_bound.append(prob.attributes.bestbound)
+                solve_time.append(time.time() - start_time)
+            
+            # print('Objective ', mip_bound)
+            # print("IPA Nodes ", num_nodes)
+            # print('IPA time ', solve_time)
+
+            # Create the DataFrame for this scenario
+            df = pd.DataFrame({
+                "Objective": mip_bound,
+                "IPA Nodes": num_nodes,
+                "IPA Time": solve_time
+            })
+            dfs.append(df)
+            print(f"Results for Scenario {scenario}:")
+            print(df)
+
+        # Calculate averages
+        average_nodes = [int(np.mean([dfs[0]["IPA Nodes"][i], dfs[1]["IPA Nodes"][i], dfs[2]["IPA Nodes"][i]])) for i in range(len(dfs[0]))]
+        average_time = [round(np.mean([dfs[0]["IPA Time"][i], dfs[1]["IPA Time"][i], dfs[2]["IPA Time"][i]]), 3) for i in range(len(dfs[0]))]
+
+        # Combine results into a single DataFrame for output
+        combined_data = []
+        for i in range(len(dfs[0])):
+            combined_data.append([
+                i,  # Instance
+                dfs[0].loc[i, "Objective"], dfs[0].loc[i, "IPA Nodes"], dfs[0].loc[i, "IPA Time"],  # Scenario 1
+                dfs[1].loc[i, "Objective"], dfs[1].loc[i, "IPA Nodes"], dfs[1].loc[i, "IPA Time"],  # Scenario 2
+                dfs[2].loc[i, "Objective"], dfs[2].loc[i, "IPA Nodes"], dfs[2].loc[i, "IPA Time"],  # Scenario 3
+                average_nodes[i], average_time[i]  # Averages
+            ])
+
+        # Create a nicely formatted DataFrame
+        formatted_df = pd.DataFrame(combined_data, columns=[
+            "Instance",
+            "Scenario 1 - Objective", "Scenario 1 - IPA Nodes", "Scenario 1 - IPA Time",
+            "Scenario 2 - Objective", "Scenario 2 - IPA Nodes", "Scenario 2 - IPA Time",
+            "Scenario 3 - Objective", "Scenario 3 - IPA Nodes", "Scenario 3 - IPA Time",
+            "Average Nodes", "Average Time"
+        ])
+
+        # Generate output filename
+        # output_filename = "results_Mangasarian_heuristic.xlsx"
+        output_filename = f"results_Mangasarian_heuristic_{filename.split('.')[0].split('_', 1)[1]}.xlsx"  # e.g., results_10_2_3.xlsx
+        formatted_df.to_excel(output_filename, index=False)
+        print(f"Results saved to {output_filename}\n")

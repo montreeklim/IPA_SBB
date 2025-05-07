@@ -5,12 +5,35 @@ import itertools
 import time
 import pickle
 import pandas as pd
-import re  # For extracting numbers from filenames
-# import matplotlib.pyplot as plt
-# import gurobipy as gp
+from dataclasses import dataclass, field
+import gc
 
 np.set_printoptions(precision=3, suppress=True)
 xp.init('C:/xpressmp/bin/xpauth.xpr') # license path for laptop
+
+@dataclass
+class ProblemData:
+    dataset: np.ndarray
+    n_planes: int
+    tol: float = 1e-4
+    master_rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng(42))
+    all_starts: list = field(init=False)
+    M: int = field(init=False)
+    N: int = field(init=False)
+    K: int = field(init=False)
+    a: np.ndarray = field(init=False)
+    BigM: float = field(init=False)
+    gamma_bound: float = field(init=False)
+
+    def __post_init__(self):
+        self.M, self.N = self.dataset.shape
+        self.K = self.n_planes
+        self.a = self.dataset
+        h = np.max(self.a)
+        self.BigM = h * np.sqrt(self.N)
+        self.gamma_bound = self.N * h + h * np.sqrt(self.N)
+        # Pre-generate random starts
+        self.all_starts = [generate_random_matrix(self.K, self.N, self.master_rng) for _ in range(100)]
 
 def generate_random_matrix(K, N, rng):
     # Generate a K x N matrix with random values from a normal distribution
@@ -21,58 +44,88 @@ def generate_random_matrix(K, N, rng):
     A_normalized = A / row_norms
     return A_normalized, gamma
 
-def starting_points(a, starts_list):
-    M, _      = a.shape
-    rows_idx  = np.arange(M)
-    start_sols = []
+def starting_points(pdata: ProblemData, starts_list):
+    """
+    Generate feasible starting MIP‐solutions (w, gamma, x, y) for hyperplane clustering,
+    using only data from `pd` and the provided starts_list.  Uses a vectorized batch
+    approach to find a valid random start (each cluster ≥ N points).
+    """
+    M, N, K     = pdata.M, pdata.N, pdata.K
+    A           = pdata.a              # (M × N)
+    tol         = pdata.tol
+    BigM        = pdata.BigM
+    rng         = pdata.master_rng
+
+    rows_idx    = np.arange(M)
+    start_sols  = []
 
     for w0, gamma0 in starts_list:
+        # 1) warm‐start hyperplane params
         w, gamma = w0.copy(), gamma0.copy()
 
         # 2a) initial assignment
-        dot = a @ w.T
-        dist = np.abs(dot - gamma)
-        assign = np.argmin(dist, axis=1)
-        valid_assignment = False
-        while not valid_assignment:
-            # Generate new hyperplane parameters
-            w, gamma = generate_random_matrix(K, N, master_rng )
-            dot_products = a @ w.T
-            distances = np.abs(dot_products - gamma)  # gamma broadcasts along rows.
-            assignments = np.argmin(distances, axis=1)
-            
-            # Check that each cluster has at least min_points_per_cluster points.
-            valid_assignment = True
-            for cluster in range(K):
-                if np.sum(assignments == cluster) < N:
-                    valid_assignment = False
-                    break
-        
-        max_iter = 50
+        dot        = A @ w.T
+        dist       = np.abs(dot - gamma)      # (M × K)
+        assign     = np.argmin(dist, axis=1)  # length‐M
+
+        # 2b) vectorized “find-feasible-start” loop
+        B = 20  # batch size: tune as needed
+        while True:
+            # draw B random (W,Γ) pairs
+            Ws     = rng.standard_normal((B, K, N))
+            Gammas = rng.standard_normal((B, K))
+            norms  = np.linalg.norm(Ws, axis=2, keepdims=True)  # (B,K,1)
+            Ws     = Ws / norms
+
+            # compute dists: (B, M, K)
+            dots   = np.matmul(A[None,:,:], Ws.transpose(0,2,1))
+            dists  = np.abs(dots - Gammas[:,None,:])
+
+            # assignments: (B, M)
+            assigns_batch = np.argmin(dists, axis=2)
+
+            # counts[b,k] = #points in cluster k for batch b → (B, K)
+            counts = np.stack(
+                [(assigns_batch == k).sum(axis=1) for k in range(K)],
+                axis=1
+            )
+
+            valid_mask = np.all(counts >= N, axis=1)  # (B,)
+            if valid_mask.any():
+                idx   = np.argmax(valid_mask)
+                w     = Ws[idx]
+                gamma = Gammas[idx]
+                assign = assigns_batch[idx]
+                break
+            # else repeat
+
+        # 2c) alternating minimization (unchanged)
         prev_assign = assign.copy()
-        for _ in range(max_iter):
+        for _ in range(50):
             w_old = w.copy()
-            dot   = a @ w.T
+            dot   = A @ w.T
             dist  = np.abs(dot - gamma)
             assign = np.argmin(dist, axis=1)
 
-            # build x_flat, call compute_w_gamma_y, etc.
-            x      = np.zeros((M, K), int)
+            x = np.zeros((M, K), dtype=int)
             x[rows_idx, assign] = 1
-            w, gamma, y = compute_w_gamma_y(a, x.ravel(), w_old, M, K, BigM)
-            w     = np.array(w).reshape(K, N)
-            gamma = np.array(gamma)
+
+            w_list, gamma_list, y = compute_w_gamma_y(A, x.ravel(), w_old, M, K, BigM)
+            w     = np.array(w_list).reshape(K, N)
+            gamma = np.array(gamma_list)
+
             if np.linalg.norm(prev_assign - assign) < tol:
                 break
             prev_assign = assign.copy()
 
-        # 2c) pack into one vector
+        # 2d) pack into one flat solution vector
         new_sol = np.concatenate([w.ravel(), gamma, x.ravel(), y])
         start_sols.append(np.round(new_sol, 10))
+
     return start_sols
 
 
-def inverse_power_method(A, x0, tol=1e-6, max_iter=1000, reg=1e-10):
+def inverse_power_method(A, x0, tol=1e-4, max_iter=30, reg=1e-10):
     """
     Uses the inverse power method to find the eigenvalue of A closest to zero.
     
@@ -141,29 +194,6 @@ def split_data(data, K, N):
     """Splits data into K parts of length N."""
     return np.array([data[i*N : (i+1)*N] for i in range(K)])
 
-
-def are_rows_near_duplicates(row1, row2, tol=1e-6):
-    '''
-    Function to check if rows are nearly identical
-
-    Parameters
-    ----------
-    row1 : np.array
-    row2 : np.array
-    tol : float, optional
-        The default is 1e-6.
-
-    Returns
-    -------
-    bool
-        True if two rows are nearly identical, False otherwise
-
-    '''
-    if np.linalg.norm(row1 - row2) < tol or np.linalg.norm(row1 + row2) < tol:
-        return True
-    else:
-        return False
-
 def up_extension_constraint(vertices_matrix):
     """Create a numpy array contains coefficient for adding constraints in new nodes based on matrix of extreme points."""
     # Convert the vertices_matrix to a numpy array
@@ -192,29 +222,47 @@ def up_extension_constraint(vertices_matrix):
     
     # Check redundant
     # Identify and remove near-redundant rows
-    unique_rows = []
-    for i in range(a_coeff.shape[0]):
-        is_duplicate = False
-        for unique_row in unique_rows:
-            if are_rows_near_duplicates(a_coeff[i], unique_row):
-                is_duplicate = True
-                break
-        if not is_duplicate:
-            unique_rows.append(a_coeff[i])
+    unique = []
+
+    for row in a_coeff:
+        # inline “near‐duplicate or sign‐flipped near‐duplicate” test
+        is_dup = any(
+            np.allclose(row, u, atol=1e-6)    # same
+            or np.allclose(row, -u, atol=1e-6) # flipped
+            for u in unique
+            )
+        if not is_dup:
+            unique.append(row)
+
+    unique_rows = np.vstack(unique)
 
     # Convert the list of unique rows back to a NumPy array
     A_reduced = np.array(unique_rows)
     
     return A_reduced
 
-def check_all_balls(w_array):
-    """Check if the obtained solution norm is almost one or not."""
-    # tol = 1e-6 if w close to pi(w) accept the solution
-    global tol
-    for i in range(len(w_array)):    
-        if np.abs(np.linalg.norm(w_array[i]) - 1) >= tol:
-            return False
-    return True
+def check_all_balls(pdata: ProblemData, w_array: np.ndarray) -> bool:
+    """
+    Verify that every hyperplane weight vector in w_array lies (within tol)
+    on the unit ball.
+
+    Parameters
+    ----------
+    pd      : ProblemData
+        Contains pd.tol, the acceptance tolerance.
+    w_array : np.ndarray, shape (K, N)
+        The stack of weight vectors to check.
+
+    Returns
+    -------
+    bool
+        True if ∥w_i∥ ∈ [1–tol, 1+tol] for all i; False otherwise.
+    """
+    tol = pdata.tol
+    # vectorized norm check
+    norms = np.linalg.norm(w_array, axis=1)
+    return np.all(np.abs(norms - 1) < tol)
+
 
 def ProjectOnBall(w):
     """Project the obtained solution onto the ball through the origin."""
@@ -291,7 +339,7 @@ def compute_w_gamma_y(a, x, w_old, rows, cols, BigM):
         B_j = subarray.T @ P @ subarray
 
         # Use the inverse power method (with warm start) to compute the smallest eigenpair.
-        eigenvalue, w_j = inverse_power_method(B_j, w_old[j], tol=1e-6, max_iter=100)
+        eigenvalue, w_j = inverse_power_method(B_j, w_old[j], tol=1e-4, max_iter=30)
 
         # Compute gamma for cluster j:
         # Since e.T @ subarray is equivalent to summing the rows of subarray, we can write:
@@ -322,275 +370,327 @@ def compute_w_gamma_y(a, x, w_old, rows, cols, BigM):
     return w_concat.tolist(), gamma_list, y.tolist()
 
     
-def create_problem(n_planes = 3, dataset = None):
-    """Read the given problem or create simple linear classifier problem."""
+def create_problem(pdata: ProblemData) -> xp.problem:
+    """
+    Build and return an Xpress model for the hyperplane‐clustering MIP,
+    pulling all data (M, N, K, a, BigM, gamma_bound) from `pd`.
+    """
     prob = xp.problem()
-    global M, N, K, a, BigM
 
-    M = dataset.shape[0]
-    N = dataset.shape[1]
-    K = n_planes
-    a = dataset
+    # unpack once from pd
+    M, N, K    = pdata.M, pdata.N, pdata.K
+    a, BigM    = pdata.a, pdata.BigM
+    gamma_bound = pdata.gamma_bound
 
-    h = np.max(a)
-    BigM = h*np.sqrt(N)
-    gamma_bound = N*h + h*np.sqrt(N)
+    # --- variables ---
+    w     = prob.addVariables(K, N, lb=-1, ub=1, name="w")
+    gamma = prob.addVariables(K, lb=-gamma_bound, ub=gamma_bound, name="gamma")
+    x     = prob.addVariables(M, K, vartype=xp.binary, name="x")
+    y     = prob.addVariables(M, lb=0, name="y")
 
-    # Create variables using addVariables
-    w = prob.addVariables(K, N, lb=-1, ub=1, name='w')
-    gamma = prob.addVariables(K, lb=-gamma_bound, ub=gamma_bound, name='gamma')
-    x = prob.addVariables(M, K, vartype=xp.binary, name='x')
-    y = prob.addVariables(M, lb=0, name='y')
-
-    # Add symmetry breaking on x
-    for m in range(M):
-        for k in range(K):
-            if k > m:
-                x[m, k].ub = 0
-
-    # Add constraints
+    # --- symmetry breaking on x ---
     for i in range(M):
-        prob.addConstraint(xp.Sum(x[i,j] for j in range(min(i+1,K))) == 1)
+        for j in range(K):
+            if j > i:
+                x[i, j].ub = 0
+
+    # --- assignment + big-M constraints ---
+    for i in range(M):
+        # each point must go in exactly one of clusters 0..min(i,K-1)
+        prob.addConstraint(
+            xp.Sum(x[i, j] for j in range(min(i+1, K))) == 1
+        )
         for j in range(K):
             if j <= i:
-                prob.addConstraint(y[i] >= xp.Dot(w[j], a[i]) - gamma[j] - BigM*(1 - x[i,j]))
-                prob.addConstraint(y[i] >= xp.Dot(-w[j], a[i]) + gamma[j] - BigM*(1 - x[i,j]))
+                # y[i] ≥ | w[j]·a[i] – γ[j] |  via two half-spaces
+                prob.addConstraint(
+                    y[i] >= xp.Dot(w[j], a[i]) - gamma[j] - BigM*(1 - x[i, j])
+                )
+                prob.addConstraint(
+                    y[i] >= xp.Dot(-w[j], a[i]) + gamma[j] - BigM*(1 - x[i, j])
+                )
 
-    # Add norm constraints
+    # --- norm constraints on each hyperplane ---
     for j in range(K):
-        prob.addConstraint(xp.Sum(w[j, i]*w[j, i] for i in range(N)) <= 1 )
+        prob.addConstraint(
+            xp.Sum(w[j, t]*w[j, t] for t in range(N)) <= 1
+        )
 
-    # set objective
-    prob.setObjective(xp.Sum(y[i]*y[i] for i in range(M)), sense=xp.minimize)
-
-    global all_variables, w_variables_idxs, gamma_variables_idxs, x_variables_idxs, y_variables_idxs, refuse_sol, x_vars, new_list
-    refuse_sol = starting_points(a, all_starts)
-    all_variables = prob.getVariable()
-    w_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("w")]
-    gamma_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("gamma")]
-    x_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("x")]
-    y_variables_idxs = [ind for ind, var in enumerate(all_variables) if var.name.startswith("y")]
-    new_list = w_variables_idxs + x_variables_idxs + y_variables_idxs
+    # --- objective: minimize sum of squared residuals ---
+    prob.setObjective(
+        xp.Sum(y[i]*y[i] for i in range(M)),
+        sense=xp.minimize
+    )
 
     return prob
 
 
+
 def cbchecksol(prob, data, soltype, cutoff):
-    """Callback function to reject the solution if it is not on the ball and accept otherwise."""
-    # print('Enter Preintsol Callback')
+    """
+    Reject any node‐solution whose hyperplanes aren’t all on the unit‐ball.
+    If they are off‐ball but nonzero, compute a heuristic solution via Mangasarian
+    and stash it in data['refuse_sol'] for prenode_callback to add later.
+    """
+    pdata       = data["pd"]
+    M, N, K  = pdata.M, pdata.N, pdata.K
+    a, BigM  = pdata.a, pdata.BigM
+    tol      = pdata.tol
+    w_idxs   = data["w_idxs"]
+    x_idxs   = data["x_idxs"]
+    refuse   = data["refuse_sol"]
+
+    # only act once presolve has produced an LP solution
+    if (prob.attributes.presolvestate & 128) == 0:
+        return (1, 0)
+
+    # fetch the continuous solution
     try:
-        global BigM, a, tol
-        if (prob.attributes.presolvestate & 128) == 0:
-            return (1, 0)
-
-
-        # Retrieve node solution
-        try:
-            sol = prob.getCallbackSolution(prob.getVariable())
-        except:
-            return (1, cutoff)
-
-        w_sol = sol[min(w_variables_idxs): max(w_variables_idxs)+1]
-        w_array = split_data(w_sol, K, N)
-        non_zero_check = np.any(np.abs(w_array) > 1e-4, axis=1)
-        all_non_zero = np.all(non_zero_check)
-
-        if check_all_balls(w_array):
-            refuse = 0
-            
-            if prob.attributes.lpobjval == 0:
-                return (1, cutoff)
-        elif all_non_zero:
-            refuse = 1
-            # Add a feasible solution from Mangasarian from leaf node
-            x_sol = sol[min(x_variables_idxs): max(x_variables_idxs) + 1]
-            new_w, new_gamma, new_y = compute_w_gamma_y(a, x_sol, w_array, M, K, BigM)
-
-            # Convert arrays to lists if needed.
-            new_w, new_gamma, x_sol, new_y = [safe_tolist(arr) for arr in (new_w, new_gamma, x_sol, new_y)]
-
-            # Concatenate the lists to form the new solution.
-            new_sol = new_w + new_gamma + x_sol + new_y
-            new_sol_round = np.array([round(a, 10) for a in new_sol])
-            refuse_sol.append(new_sol_round) 
-        else:
-            refuse = 1
-
-        return (refuse, cutoff)
-
-    except Exception:
+        sol = prob.getCallbackSolution(prob.getVariable())
+    except:
         return (1, cutoff)
 
-def prenode_callback(prob, data):
-    # print('Enter Prenode Callback')
-    global refuse_sol
+    # Extract and reshape the w-part
+    w_flat = sol[min(w_idxs) : max(w_idxs) + 1]
+    w_arr  = split_data(w_flat, K, N)
 
-    if len(refuse_sol) > 0:
-        for sol in refuse_sol:
+    # 1) if all hyperplanes are already unit-norm, accept or skip
+    on_ball = all(abs(np.linalg.norm(w_arr[i]) - 1) < tol for i in range(K))
+    if on_ball:
+        # If the LP obj is 0, we still reject so branching continues
+        if prob.attributes.lpobjval == 0:
+            return (1, cutoff)
+        # Otherwise accept this solution
+        return (0, cutoff)
+
+    # 2) if every w-vector is nonzero but some are off-ball, record a heuristic
+    nonzero = np.any(np.abs(w_arr) > 1e-4, axis=1)
+    if np.all(nonzero):
+        # extract x, recompute (w,gamma,y) via the MIP-free routine
+        x_flat = sol[min(x_idxs) : max(x_idxs) + 1]
+        new_w, new_gamma, new_y = compute_w_gamma_y(a, x_flat, w_arr, M, K, BigM)
+        # flatten and round
+        new_w, new_gamma, x_flat, new_y = [
+            safe_tolist(arr) for arr in (new_w, new_gamma, x_flat, new_y)
+        ]
+        new_sol = np.round(new_w + new_gamma + x_flat + new_y, 10).tolist()
+        refuse.append(new_sol)
+
+    # In all other cases we reject
+    return (1, cutoff)
+
+
+def prenode_callback(prob, data):
+    """
+    Before diving into a new node, inject any heuristic MIP‐solutions
+    we stored in data['refuse_sol'] (from cbchecksol), then clear the list.
+    """
+    refuse = data["refuse_sol"]
+    if refuse:
+        for sol in refuse:
             prob.addmipsol(sol)
-        refuse_sol = []
-        # remove callback
-        # prob.removecbprenode()
-        
+        # clear for the next node
+        data["refuse_sol"] = []
     return 0
 
 def cbbranch(prob, data, branch):
-    # print('Enter Branching Callback')
-    global initial_polytope, extreme_points
-    currentnode = prob.attributes.currentnode
-    # make a fresh RNG whose seed is a function of the node ID
-    rng_node = np.random.default_rng(  42 + currentnode )
+    """
+    Branching callback: at node 1 build the full (N+1)^K branchobj;
+    at other nodes decide whether to branch on x or w, and if w build
+    a small branchobj on the chosen “ball face.”
+    """
+    pdata       = data["pd"]
+    N, K     = pdata.N, pdata.K
+    tol      = pdata.tol
+    node     = prob.attributes.currentnode
+    rng_node = np.random.default_rng(42 + node)
 
-    if currentnode == 1:
-        # Root node: build full branching object.
+    # --- ROOT NODE: build the big (N+1)^K branching object ---
+    if node == 1:
         bo = xp.branchobj(prob, isoriginal=True)
         bo.addbranches((N + 1) ** K)
-        initial_polytope = create_n_simplex(N)
-        extreme_points = {}
-        a_coeff = {}
-        submatrix = {}
 
-        # Precompute submatrices, extreme points, and their associated constraint coefficients.
+        # build and stash the initial simplex
+        init_simplex = create_n_simplex(N)
+        data["initial_polytope"] = init_simplex
+
+        # for each face i=0..N compute its submatrix and coeffs
+        data["submatrix"]      = {}
+        data["a_coeff"]        = {}
+        data["extreme_points"] = {}
+
         for i in range(N + 1):
-            submat = np.delete(initial_polytope, i, axis=0)
-            submatrix[i] = submat
-            extreme_points[i] = submat
-            coeff = up_extension_constraint(submat)
-            # Vectorized dot-products: adjust sign if all dot-products are very close to zero.
-            for j in range(len(coeff)):
-                # Use np.dot on the entire submatrix rather than a list comprehension.
-                dot_products = submat @ coeff[j]
-                if np.max(dot_products) < 1e-6:
-                    coeff[j] = -coeff[j]
-            a_coeff[i] = coeff
+            face = np.delete(init_simplex, i, axis=0)
+            data["submatrix"][i]      = face
+            data["extreme_points"][i] = face
 
-        # Precompute powers for computing ball_idx.
-        power_factors = [(N + 1) ** (K - k - 1) for k in range(K)]
-        values = range(N + 1)
-        for combination in itertools.product(values, repeat=K):
-            ball_idx = sum(combination[k] * power_factors[k] for k in range(K))
-            extreme_points[ball_idx] = {}
-            for k in range(K):
-                w_ball_idx = np.arange(k * N, (k + 1) * N)
-                coeff_list = a_coeff[combination[k]]
-                for j, coeff in enumerate(coeff_list):
-                    rhs_value = 1 if j == 0 else 0
-                    bo.addrows(ball_idx, ['G'], [rhs_value], [0, N * K], w_ball_idx, coeff)
-                extreme_points[ball_idx][k] = submatrix[combination[k]]
+            coeffs = up_extension_constraint(face)
+            # flip sign so max(face @ c) >= 0
+            for j, c in enumerate(coeffs):
+                if np.max(face @ c) < 1e-6:
+                    coeffs[j] = -c
+            data["a_coeff"][i] = coeffs
+
+        # now for every K‐tuple of faces add rows
+        powers = [(N + 1) ** (K - k - 1) for k in range(K)]
+        for combo in itertools.product(range(N+1), repeat=K):
+            idx = sum(combo[k] * powers[k] for k in range(K))
+            # each hyperplane k
+            for k, face_id in enumerate(combo):
+                w_vars = np.arange(k * N, (k + 1) * N)
+                for j, coeff in enumerate(data["a_coeff"][face_id]):
+                    rhs = 1 if j == 0 else 0
+                    bo.addrows(
+                        idx,
+                        ['G'],
+                        [rhs],
+                        [0, N * K],
+                        w_vars,
+                        coeff
+                    )
+            # also stash the combined extreme_points if you need them later
+            data["extreme_points"][idx] = data["submatrix"][combo[0]]
+
         bo.setpriority(100)
         return bo
 
-    else:
-        # Non-root node branch processing.
-        # Skip if presolvestate flag is not set.
-        if (prob.attributes.presolvestate & 128) == 0:
+    # --- NON-ROOT NODES: decide whether and how to branch ---
+    # only if LP presolve has run
+    if (prob.attributes.presolvestate & 128) == 0:
+        return branch
+
+    # fetch the current LP solution
+    try:
+        sol = prob.getCallbackSolution(prob.getVariable())
+    except:
+        return branch
+
+    # reshape the w‐part from the stored indices
+    w_idxs = data["w_idxs"]
+    flat_w = sol[min(w_idxs): max(w_idxs) + 1]
+    w_arr  = split_data(flat_w, K, N)
+
+    # if all are already on the ball, accept or skip
+    on_ball = all(abs(np.linalg.norm(w_arr[i]) - 1) < tol for i in range(K))
+    if on_ball:
+        # if lp obj==0, force branching; otherwise accept
+        if prob.attributes.lpobjval == 0:
             return branch
+        return branch  # or `return (0,0)` if you want to accept here
 
-        try:
-            sol = prob.getCallbackSolution(prob.getVariable())
-        except Exception:
-            return branch
+    # pick the “smallest‐norm” ball
+    norms   = np.linalg.norm(w_arr, axis=1)
+    ball_id = int(np.argmin(norms))
 
-        # Extract and reshape w part of the solution.
-        w_sol = sol[min(w_variables_idxs): max(w_variables_idxs) + 1]
-        w_array = split_data(w_sol, K, N)
-        split_index = split_data(w_variables_idxs, K, N)
+    nd = data.setdefault("node_data", {})
+    nd[node] = {"w_array": w_arr, "ball_id": ball_id}
 
-        if check_all_balls(w_array):
-            return branch
+    # optional: skip if distances already tiny
+    dist = nd[node].get("distance", [])
+    if dist and max(dist) <= 1e-6:
+        return branch
 
-        norms = np.linalg.norm(w_array, axis=-1)
-        ball_idx = int(np.argmin(norms))
-        w_ball_idx = list(split_index[ball_idx])
+    # bound/gap test
+    dual = prob.getAttrib("bestbound")
+    if dual <= tol:
+        nd[node]["branch_on_w"] = False
+        return branch
 
-        node_data = data[prob.attributes.currentnode]
-        node_data['w_array'] = w_array
-        node_data['ball_idx'] = ball_idx
+    mipobj = prob.getAttrib("mipobjval")
+    gap    = abs((mipobj - dual) / mipobj)
 
-        try:
-            if max(node_data['distance']) <= 1e-6:
-                return branch
-        except Exception:
-            pass
+    # randomly choose x‐branch vs w‐branch
+    branch_on_w = rng_node.random() >= max(gap, 1-gap)
+    nd[node]["branch_on_w"] = branch_on_w
+    if not branch_on_w:
+        return branch
 
-        dual_bound = prob.getAttrib("bestbound")
-        if dual_bound <= tol:
-            node_data['branch'] = False
-            return branch
-        else:
-            best_solution = prob.getAttrib("mipobjval")
-            mip_gap = abs((best_solution - dual_bound) / best_solution)
+    # now build a small branchobj on the chosen ball face
+    face     = data["extreme_points"][ball_id]
+    proj_w   = ProjectOnBall(w_arr[ball_id])
+    face2    = np.vstack((face, proj_w))
 
-        # Randomized decision: branch on x or w.
-        if rng_node.random() < max(mip_gap, 1 - mip_gap):
-            node_data['branch'] = False
-            return branch
-        else:
-            node_data['branch'] = True
+    try:
+        coeffs2 = up_extension_constraint(face2)
+    except:
+        return branch
 
-        # Project the w_array onto the ball.
-        pi_w_array = [ProjectOnBall(w_j) for w_j in w_array]
-        initial_points = node_data[ball_idx]
-        new_matrix = append_zeros_and_ones(initial_points)
+    bo = xp.branchobj(prob, isoriginal=True)
+    bo.addbranches(N)
+    w_vars = np.arange(ball_id * N, (ball_id + 1) * N)
 
-        rank_initial = np.linalg.matrix_rank(initial_points, tol=1e-6)
-        if rank_initial < N or np.linalg.matrix_rank(new_matrix, tol=1e-6) != rank_initial:
-            return branch
+    for i in range(N):
+        # drop row i
+        for j, cf in enumerate(coeffs2):
+            rhs = 1 if j == 0 else 0
+            if j > 0 and np.max(np.vstack((np.delete(face2, i, 0), proj_w)) @ cf) < 1e-6:
+                cf = -cf
+            bo.addrows(i, ['G'], [rhs], [0, N*K], w_vars, cf)
 
-        bo = xp.branchobj(prob, isoriginal=True)
-        bo.addbranches(N)
-        # For each possible row deletion (each branch)
-        for i in range(N):
-            submat = np.delete(initial_points, i, axis=0)
-            # Append the projected w for the current ball.
-            extreme_temp = np.concatenate((submat, [pi_w_array[ball_idx]]), axis=0)
-            try:
-                a_coeff = up_extension_constraint(extreme_temp)
-            except Exception:
-                return branch
-            for j, coeff in enumerate(a_coeff):
-                if j == 0:
-                    bo.addrows(i, ['G'], [1], [0, N * K], w_ball_idx, coeff)
-                else:
-                    dot_products = extreme_temp @ coeff
-                    if np.max(dot_products) < 1e-6:
-                        coeff = -coeff
-                    bo.addrows(i, ['G'], [0], [0, N * K], w_ball_idx, coeff)
-        return bo
+    return bo
 
-    return branch
 
 
 def cbnewnode(prob, data, parentnode, newnode, branch):
-    # print('Enter NEWNODE callback')
-    data[newnode] = {}
+    """
+    When a new node is created:
+     - if its parent was the root (parentnode==1), 
+       we pick up the precomputed extreme‐points face 'branch'
+     - otherwise, if the parent branched on x, we inherit unchanged
+     - if the parent branched on w, we remove row 'branch' from the face,
+       append the projected w, and record distances.
+    """
+    pdata       = data["pd"]
+    N        = pdata.N
+    node_data = data.setdefault("node_data", {})
 
+    # initialize storage for this new node
+    node_data[newnode] = {}
+
+    # only act once the LP presolve has given us a solution
     if (prob.attributes.presolvestate & 128) == 0:
         return 0
 
+    # Case 1: child of the root—branch index directly maps to a ball face
     if parentnode == 1:
-        data[newnode] = extreme_points[branch]
-    else:
-        # print('Not in the root node')
-        # if parentnode is branch on x
-        if not data[parentnode]['branch']:
-            # print('Branch on x')
-            data[newnode] = data[parentnode]
-            return 0
+        face = data["extreme_points"][branch]  # precomputed at root
+        node_data[newnode]["face_matrix"] = face
+        node_data[newnode]["ball_id"]      = branch
+        return 0
 
-        # IPA branch on w
-        w_array = data[parentnode]['w_array']
-        ball_idx = data[parentnode]['ball_idx']
+    # Otherwise, look at what the parent did
+    parent = node_data[parentnode]
 
-        initial_polytope = data[parentnode][ball_idx]
-        submatrix = np.delete(initial_polytope, branch, axis=0)
-        pi_w = ProjectOnBall(w_array[ball_idx])
-        for key in data[parentnode].keys():
-            data[newnode][key] = data[parentnode][key]
-        data[newnode][ball_idx] = np.vstack((submatrix, pi_w))
+    # If parent branched on x (branch flag False), just inherit
+    if parent.get("branch") is False:
+        node_data[newnode] = parent.copy()
+        return 0
 
-        distance = [np.linalg.norm(data[newnode][ball_idx][n] - data[parentnode][ball_idx][n]) for n in range(N)]
-        data[newnode]['distance'] = distance
+    # Parent branched on w: do the “remove one row + project” update
+    w_arr   = parent["w_array"]
+    ball_id = parent["ball_id"]
+
+    # original face for this ball
+    orig_face = data["extreme_points"][ball_id]
+
+    # remove the 'branch'-th row
+    subface = np.delete(orig_face, branch, axis=0)
+    # project the chosen hyperplane onto the ball
+    pi_w    = ProjectOnBall(w_arr[ball_id])
+
+    # copy all of parent’s bookkeeping
+    node_data[newnode] = parent.copy()
+    # overwrite with the new face
+    updated_face = np.vstack((subface, pi_w))
+    node_data[newnode]["face_matrix"] = updated_face
+    node_data[newnode]["ball_id"]      = ball_id
+
+    # record how far each point moved
+    dists = [
+        np.linalg.norm(updated_face[i] - orig_face[i])
+        for i in range(N)
+    ]
+    node_data[newnode]["distance"] = dists
 
     return 0
 
@@ -608,132 +708,104 @@ def cb_usersolnotify(prob, data, solname, status):
     print(f"[UserSolNotify] solution '{solname}' status={status}")
 
 def cbnodelpsolved(prob, data):
+    """
+    After an LP solve at a node, occasionally invoke a MIP-free heuristic
+    to produce a feasible solution if the LP lower bound is still too small.
+    """
+    pdata        = data["pd"]
+    M, N, K   = pdata.M, pdata.N, pdata.K
+    a, BigM   = pdata.a, pdata.BigM
+    tol       = pdata.tol
+    x_idxs    = data["x_idxs"]
+    node_data = data.setdefault("node_data", {})
+    refuse    = data["refuse_sol"]
 
-    lower_bound = prob.getAttrib("bestbound")
-    rng = np.random.default_rng( 1234 + prob.attributes.currentnode )
-    # Only execute if conditions are met.
-    # or lower_bound >= 1e-6
-    if prob.attributes.currentnode < (N + 1) ** (K + 1) or rng.random() >= 0.1 or lower_bound >= 1e-6:
+    lower = prob.getAttrib("bestbound")
+    rng   = np.random.default_rng(1234 + prob.attributes.currentnode)
+
+    # only run when deep enough, a random chance, and LB < tol
+    if (prob.attributes.currentnode < (N+1)**(K+1)
+        or rng.random() >= 0.1
+        or lower >= tol):
         return 0
 
+    # fetch the LP solution
     try:
-        # Retrieve the callback solution and extract the x portion.
         sol = prob.getCallbackSolution(prob.getVariable())
-        min_idx, max_idx = min(x_variables_idxs), max(x_variables_idxs) + 1
-        x_sol = split_data(sol[min_idx:max_idx], M, K)
-
-        # Determine cluster assignments using a binary mask.
-        mask = (x_sol == 1)
-        result = np.where(mask.any(axis=1), np.argmax(mask, axis=1), -1)
-
-        # Use a local reference to the current node's data.
-        currentnode = prob.attributes.currentnode
-        current_data = data[currentnode]
-
-        # Compute hyperplane weights and gamma values.
-        if 'heuristic_w' in current_data:
-            w = current_data['heuristic_w']
-            gamma = np.empty(K)
-            for i in range(K):
-                sub_a = a[result == i]
-                n = sub_a.shape[0]
-                if n == 0:
-                    return 0
-                gamma[i] = np.sum(sub_a @ w[i]) / n
-        else:
-            w = np.empty((K, N))
-            gamma = np.empty(K)
-            for i in range(K):
-                sub_a = a[result == i]
-                n = sub_a.shape[0]
-                if n == 0:
-                    return 0
-                # Compute projection matrix: P = I - ones((n,n))/n.
-                P = np.eye(n) - np.ones((n, n)) / n
-                B = sub_a.T @ P @ sub_a
-                q = current_data['w_array'][i]
-                _, w_j = inverse_power_method(B, q, tol=1e-6, max_iter=100)
-                gamma[i] = np.sum(sub_a @ w_j) / n
-                w[i, :] = w_j
-
-        # Process unassigned points (those with result < 0).
-        mask_unassigned = result < 0
-        unassign_points = a[mask_unassigned]
-        prev_assignment = np.zeros(unassign_points.shape[0])
-        max_iter = 100
-        rows_idx = np.arange(M)  # Precompute row indices for x reconstruction.
-
-        for iteration in range(max_iter):
-            w_old = w.copy()
-            # Calculate distances from each unassigned point to each hyperplane.
-            dot_products = unassign_points @ w.T
-            distances = np.abs(dot_products - gamma)  # gamma broadcasts along rows.
-            assignments = np.argmin(distances, axis=1)
-            result[mask_unassigned] = assignments
-
-            # Reconstruct x as an M x K binary matrix.
-            x = np.zeros((M, K), dtype=int)
-            x[rows_idx, result] = 1
-            x_flat = x.ravel()
-
-            # Update hyperplane parameters (and obtain error vector y).
-            w, gamma, y = compute_w_gamma_y(a, x_flat, w_old, M, K, BigM)
-            w = np.asarray(w).reshape(K, N)
-            gamma = np.asarray(gamma)
-
-            # Convergence check: if assignments change little, stop iterating.
-            if np.linalg.norm(prev_assignment - assignments) < tol:
-                break
-            prev_assignment = assignments.copy()
-
-        # Concatenate all parts into a new solution.
-        new_sol = np.concatenate([w.ravel(), gamma.ravel(), x_flat, np.asarray(y).ravel()])
-        rounded_new_sol = np.round(new_sol, 10)
-        refuse_sol.append(rounded_new_sol.tolist())
-
-        # Update data with the current heuristic weights.
-        current_data['heuristic_w'] = w
-        return 0
-    except Exception:
+    except:
         return 0
 
-def solveprob(prob, initial_refuse=None):
-        
-    data = {}
-    # data[1] = {}
-    data['node_count'] = 0
-    data['x_sol']= []
-    # data['dataframe'] = {}
-    prob.addcbpreintsol(cbchecksol, data, 2)
-    prob.addcbchgbranchobject(cbbranch, data, 2)
-    prob.addcbnewnode(cbnewnode, data, 2)
-    prob.addcbprenode(prenode_callback, data, 1)
-    prob.addcbusersolnotify(cb_usersolnotify, data, 1)
-    prob.addcbnodelpsolved(cbnodelpsolved, data, 2)
-    # prob.controls.outputlog = 0
-    # prob.controls.feastol = 1e-4
-    # prob.controls.feastoltarget = 1e-4
-    # prob.controls.optimalitytoltarget = 1e-4
-    prob.controls.refineops = 531
-    # prob.controls.presolve = 0
-    prob.controls.backtrack = 5
-    prob.controls.backtracktie = 5
-    prob.controls.timelimit = 180
-    prob.controls.randomseed = 42
-    prob.controls.deterministic = 1
-    prob.controls.nodeselection = 4
-    prob.controls.breadthfirst = (N+1)**K + 1
-    prob.controls.threads = 1
-    # prob.controls.miplog = -100
-    # prob.controls.maxnode = 100
+    # extract x and build assignment vector
+    flat_x = sol[min(x_idxs) : max(x_idxs) + 1]
+    x_mat  = split_data(flat_x, M, K)
+    mask   = (x_mat == 1)
+    result = np.where(mask.any(axis=1), np.argmax(mask, axis=1), -1)
 
-    prob.mipoptimize("")
-    # return data
+    node = prob.attributes.currentnode
+    nd   = node_data.setdefault(node, {})
+
+    # --- compute (or reuse) hyperplane weights w and gammas ---
+    if "heuristic_w" in nd:
+        w     = nd["heuristic_w"]
+        gamma = np.empty(K)
+        for i in range(K):
+            pts = a[result == i]
+            if pts.shape[0] == 0:
+                return 0
+            gamma[i] = np.sum(pts @ w[i]) / pts.shape[0]
+    else:
+        w     = np.empty((K, N))
+        gamma = np.empty(K)
+        for i in range(K):
+            pts = a[result == i]
+            if pts.shape[0] == 0:
+                return 0
+            P       = np.eye(pts.shape[0]) - np.ones((pts.shape[0], pts.shape[0]))/pts.shape[0]
+            B       = pts.T @ P @ pts
+            q       = nd["w_array"][i]
+            _, wj   = inverse_power_method(B, q, tol=1e-4, max_iter=30)
+            gamma[i] = np.sum(pts @ wj) / pts.shape[0]
+            w[i, :]  = wj
+
+    # --- refine any unassigned points by alternating minimization ---
+    unmask   = result < 0
+    pts_un   = a[unmask]
+    prev_ass = np.zeros(pts_un.shape[0])
+    rows_idx = np.arange(M)
+
+    for _ in range(100):
+        w_old       = w.copy()
+        dps         = pts_un @ w.T
+        dists       = np.abs(dps - gamma)
+        assigns     = np.argmin(dists, axis=1)
+        result[unmask] = assigns
+
+        # rebuild x and flatten
+        x_full = np.zeros((M, K), dtype=int)
+        x_full[rows_idx, result] = 1
+        flat_x = x_full.ravel()
+
+        # recompute (w, gamma, y)
+        w_list, gamma_list, y = compute_w_gamma_y(a, flat_x, w_old, M, K, BigM)
+        w     = np.array(w_list).reshape(K, N)
+        gamma = np.array(gamma_list)
+
+        if np.linalg.norm(prev_ass - assigns) < tol:
+            break
+        prev_ass = assigns.copy()
+
+    # --- pack into a new MIP solution and stash it ---
+    new_sol = np.concatenate([w.ravel(), gamma.ravel(), flat_x, np.asarray(y).ravel()])
+    refuse.append(np.round(new_sol, 10).tolist())
+
+    # remember for next time
+    nd["heuristic_w"] = w
+
+    return 0
     
 def create_problem_defaults(n_planes = 3, dataset = None):
     """Read the given problem or create simple linear classifier problem."""
     prob = xp.problem()
-    global M, N, K, a, BigM
 
     M = dataset.shape[0]
     N = dataset.shape[1]
@@ -773,321 +845,139 @@ def create_problem_defaults(n_planes = 3, dataset = None):
     
     return prob
 
-if __name__ == '__main__':
-    tol = 1e-4
-    # List of dataset filenames
+def solve(pdata: ProblemData) -> xp.problem:
+    """
+    Build, configure, and solve the Xpress model for the given ProblemData.
+    All sizes and parameters come from pdata—no globals.
+    """
+    # Unpack once
+    N, K    = pdata.N, pdata.K
+    # 1) build the model
+    prob = create_problem(pdata)
+
+    # 2) grab variable‐index lists
+    all_vars     = prob.getVariable()
+    w_idxs        = [i for i,v in enumerate(all_vars) if v.name.startswith("w")]
+    gamma_idxs    = [i for i,v in enumerate(all_vars) if v.name.startswith("gamma")]
+    x_idxs        = [i for i,v in enumerate(all_vars) if v.name.startswith("x")]
+    y_idxs        = [i for i,v in enumerate(all_vars) if v.name.startswith("y")]
+
+    # 3) precompute starting solutions
+    starts = starting_points(pdata, pdata.all_starts)
+
+    # 4) prepare the shared data dict for callbacks
+    data = {
+        "pd": pdata,
+        "w_idxs": w_idxs,
+        "gamma_idxs": gamma_idxs,
+        "x_idxs": x_idxs,
+        "y_idxs": y_idxs,
+        "refuse_sol": starts,
+        "extreme_points": {},
+        "submatrix": {},
+        "a_coeff": {},
+        "node_data": {}
+    }
+
+    # 5) register callbacks
+    prob.addcbpreintsol(cbchecksol, data, 2)
+    prob.addcbprenode(prenode_callback, data, 1)
+    prob.addcbchgbranchobject(cbbranch, data, 2)
+    prob.addcbnewnode(cbnewnode, data, 2)
+    prob.addcbnodelpsolved(cbnodelpsolved, data, 2)
+    # prob.addcbusersolnotify(cb_usersolnotify, data, 1)
+
+    # 6) solver controls (all using local N,K)
+    prob.controls.backtrack       = 5
+    prob.controls.backtracktie   = 5
+    prob.controls.timelimit      = 1800
+    prob.controls.randomseed     = 42
+    prob.controls.deterministic  = 1
+    prob.controls.nodeselection  = 4
+    prob.controls.breadthfirst   = (N + 1) ** K + 1
+    # prob.controls.threads        = 1
+    
+    start_time = time.time()
+    # 7) run
+    prob.mipoptimize()
+    computation_time = time.time() - start_time
+
+    return prob, computation_time
+
+if __name__ == "__main__":
+
+    # You can adjust tol, number of random starts, batch size, etc.
+    TOL        = 1e-4
+    N_STARTS   = 100
+    BATCH_SIZE = 2
+    RESUME_IDX = 0
+
     datasets_filenames = [
-        "LowDim_with_noise.pkl",
+        # "LowDim_with_noise.pkl",
         # "LowDim_no_noise.pkl",
         # "HighDim_with_noise.pkl",
-        # "HighDim_no_noise.pkl"
+        "HighDim_no_noise.pkl"
     ]
-    
-    # Number of instances per batch
-    batch_size = 2
-    # Total instances already processed in previous batches (2 batches x 5 instances per batch)
-    resume_from_instance = 0 * batch_size
 
     for filename in datasets_filenames:
-        print(f"Processing dataset file: {filename}")
-
-        # Load the dataset
+        print(f"Processing {filename} …")
         with open(filename, "rb") as f:
             datasets_dict = pickle.load(f)
-        print(f"Loaded {len(datasets_dict)} datasets from '{filename}'.\n")
-        
-        combined_data = []
-        instance_counter = 0  # counts processed instances in this run (not total)
-        batch_counter = resume_from_instance // batch_size
+        print(f"  Loaded {len(datasets_dict)} instances\n")
 
-        # Make a list of key-value pairs so that we can use an index to resume
-        dataset_items = list(datasets_dict.items())
-        
-        # Iterate over each (m, n, k) tuple and its corresponding data starting from the resume index
-        for idx, (key_tuple, data_array) in enumerate(dataset_items):
-            if idx < resume_from_instance:
-                # Skip instances that were already processed in previous batches
-                continue
-
-            m, n, k = key_tuple
-            # if (m,n,k) != (18,3,2) and (m,n,k) != (22,2,2):
-            if (m,n,k) != (14,3,2):
-                continue
+        results = []
+        for idx, ((m, n, k), data_array) in enumerate(datasets_dict.items()):
+            # if idx >= 2:
+            #     continue
             
-            # print(m, n, k)
-            master_rng = np.random.default_rng(42)
-            n_points = 100   # however many starting points you want
-            # suppose K and N are already defined for your dataset
-            all_starts = [ generate_random_matrix(k, n, master_rng)
-                          for _ in range(n_points) ]
+            # build your ProblemData
+            problem_data = ProblemData(
+                dataset  = data_array,
+                n_planes = k,
+                tol      = TOL
+                )
+            # override the random starts if you like
+            problem_data.all_starts = [
+                generate_random_matrix(k, n, problem_data.master_rng)
+                for _ in range(N_STARTS)
+                ]
 
-            # Initialize a list to store DataFrames for each scenario
-            dfs = []
-            for scenario in range(1):  # Adjust the number of scenarios if needed
-                # global data_dict
-                # rng_branch = np.random.default_rng(seed=42 + scenario)
-                # rng_heuristic = np.random.default_rng(seed=123 + scenario)
-                # data_dict = {}
-                print(f"--- Scenario {scenario + 1} ---")
-                # np.random.seed(scenario)  # For reproducibility
-                
-                num_nodes = []
-                mip_bound = []
-                start_time = time.time()
-
-                # Create and solve the problem for the current scenario
-                prob = create_problem(n_planes=k, dataset=data_array)
-                solveprob(prob)
-                
-                nodes = prob.attributes.nodes
-                bestbound = prob.attributes.bestbound
-                solve_time = round(time.time() - start_time, 3)
-                num_nodes.append(nodes)
-                mip_bound.append(bestbound)
-
-                # Create the DataFrame for this scenario
-                df = pd.DataFrame({
-                    "Objective": mip_bound,
-                    "Nodes": num_nodes,
-                    "Time": solve_time
-                })
-                dfs.append(df)
-                print(f"Results for Scenario {scenario + 1}:\n{df}\n")
-    
-        #     # Default experiment for the current instance
-        #     default_objective = []
-        #     default_nodes = []
-        #     default_time = []
-        #     start_time = time.time()
+            # solve it
+            prob, computation_time = solve(problem_data)
+            duration = round(computation_time, 3)
             
-        #     prob_default = create_problem_defaults(n_planes=k, dataset=data_array)
-        #     prob_default.controls.timelimit = 1800
-        #     # prob_default.optimize('x')
+            # 3) collect metrics
+            nodes     = prob.attributes.nodes
+            bestbound = prob.attributes.bestbound
+
+            print(f"  Instance {idx} (m={m},n={n},k={k}):")
+            print(f"    nodes   = {nodes}")
+            print(f"    best LB = {bestbound:.6f}")
+            print(f"    time    = {duration}s\n")
             
-        #     default_bestbound = prob_default.attributes.bestbound
-        #     default_nodes_count = prob_default.attributes.nodes
-        #     default_elapsed_time = round(time.time() - start_time, 3)
-        #     default_objective.append(default_bestbound)
-        #     default_nodes.append(default_nodes_count)
-        #     default_time.append(default_elapsed_time)
-            
-        #     # Calculate averages across scenarios
-        #     average_nodes = []
-        #     average_time = []
-        #     for i in range(len(dfs[0])):
-        #         nodes_values = [
-        #             dfs[0]["Nodes"][i] if dfs[0]["Nodes"][i] is not None else np.nan,
-        #             dfs[1]["Nodes"][i] if dfs[1]["Nodes"][i] is not None else np.nan,
-        #             dfs[2]["Nodes"][i] if dfs[2]["Nodes"][i] is not None else np.nan
-        #         ]
-        #         times_values = [
-        #             dfs[0]["Time"][i] if dfs[0]["Time"][i] is not None else np.nan,
-        #             dfs[1]["Time"][i] if dfs[1]["Time"][i] is not None else np.nan,
-        #             dfs[2]["Time"][i] if dfs[2]["Time"][i] is not None else np.nan
-        #         ]
-        #         avg_nodes = int(np.nanmean(nodes_values)) if not np.all(np.isnan(nodes_values)) else None
-        #         avg_time = round(np.nanmean(times_values), 3) if not np.all(np.isnan(times_values)) else None
-        #         average_nodes.append(avg_nodes)
-        #         average_time.append(avg_time)
-            
-        #     # Combine results for this instance
-        #     for i in range(len(dfs[0])):
-        #         combined_data.append([
-        #             m,  # m parameter
-        #             n,  # n parameter
-        #             k,  # k parameter
-        #             # Scenario 1
-        #             dfs[0].loc[i, "Objective"], dfs[0].loc[i, "Nodes"], dfs[0].loc[i, "Time"],
-        #             # Scenario 2
-        #             dfs[1].loc[i, "Objective"], dfs[1].loc[i, "Nodes"], dfs[1].loc[i, "Time"],
-        #             # Scenario 3
-        #             dfs[2].loc[i, "Objective"], dfs[2].loc[i, "Nodes"], dfs[2].loc[i, "Time"],
-        #             # Averages
-        #             average_nodes[i], average_time[i],
-        #             # Default Experiment
-        #             default_objective[i], default_nodes[i], default_time[i]
-        #         ])
-        #         instance_counter += 1
+            del prob
+            gc.collect()
 
-        #         # Save every batch_size instances
-        #         if instance_counter % batch_size == 0:
-        #             formatted_df = pd.DataFrame(combined_data, columns=[
-        #                 "m", "n", "k",  # Dataset parameters
-        #                 "1 - Objective", "1 - Nodes", "1 - Time",
-        #                 "2 - Objective", "2 - Nodes", "2 - Time",
-        #                 "3 - Objective", "3 - Nodes", "3 - Time",
-        #                 "Average Nodes", "Average Time",
-        #                 "Default - Objective", "Default - Nodes", "Default - Time"
-        #             ])
-        #             output_filename = f"results_batch_{batch_counter}.xlsx"
-        #             formatted_df.to_excel(output_filename, index=False)
-        #             print(f"Batch {batch_counter}: Saved {batch_size} instances to '{output_filename}'.\n")
-        #             combined_data = []  # Reset for the next batch
-        #             batch_counter += 1
+            results.append({
+                "m": m,
+                "n": n,
+                "k": k,
+                "Nodes": nodes,
+                "BestLB": bestbound,
+                "Time": duration
+            })
 
-        # # Save any remaining instances that didn't complete a full batch
-        # if combined_data:
-        #     formatted_df = pd.DataFrame(combined_data, columns=[
-        #         "m", "n", "k",  # Dataset parameters
-        #         "1 - Objective", "1 - Nodes", "1 - Time",
-        #         "2 - Objective", "2 - Nodes", "2 - Time",
-        #         "3 - Objective", "3 - Nodes", "3 - Time",
-        #         "Average Nodes", "Average Time",
-        #         "Default - Objective", "Default - Nodes", "Default - Time"
-        #     ])
-        #     # output_filename = f"results_batch_{batch_counter}.xlsx"
-        #     # formatted_df.to_excel(output_filename, index=False)
-        #     # print(f"Final batch: Saved remaining {len(combined_data)} instance(s) to '{output_filename}'.\n")
+            # batch‐write every BATCH_SIZE
+            if len(results) == BATCH_SIZE:
+                df = pd.DataFrame(results)
+                outname = f"results_{filename[:-4]}_batch_{idx//BATCH_SIZE}.xlsx"
+                df.to_excel(outname, index=False)
+                print(f"  → Saved batch to {outname}\n")
+                results = []
 
-
-# if __name__ == '__main__':
-    
-#     tol = 1e-4
-#     # List of dataset filenames
-#     datasets_filenames = [
-#         # "instances_10_2_2.pkl",
-#         "instances_10_2_3.pkl",
-#         # "instances_12_2_3.pkl",
-#         # "instances_14_2_3.pkl",
-#         # "instances_12_3_2.pkl"
-#         ]
-
-#     for filename in datasets_filenames:
-#         print(f"Processing dataset: {filename}")
-
-#         # Load the dataset
-#         with open(filename, "rb") as f:
-#             datasets = pickle.load(f)
-
-#         # Extract n_planes from the filename
-#         n_planes = get_n_planes_from_filename(filename)
-#         print(f"Using n_planes = {n_planes}")
-
-#         # Initialize lists to store DataFrames for each scenario
-#         dfs = []
-
-#         # Run experiments for three different configurations/scenarios
-#         for scenario in range(1):  # Adjust the number of scenarios if needed
-#             # np.random.seed(scenario)
-#             global rng_branch, rng_heuristic, data_dict
-#             rng_branch = np.random.default_rng(seed=42 + scenario)
-#             rng_heuristic = np.random.default_rng(seed=123 + scenario)
-#             num_nodes = []
-#             mip_bound = []
-#             solve_time = []
-#             start_time = time.time()
-#             data_dict = {}
-            
-#             # Test one instance
-#             dataset = datasets[9]
-#             # gurobi_model = create_gurobi_model(n_planes=n_planes, dataset=dataset)
-#             # gurobi_model.setParam('OutputFlag', 0)
-#             # gurobi_model.optimize()
-#             # global gurobi_sol
-#             # gurobi_sol = gurobi_model.x
-#             prob = create_problem(n_planes=n_planes, dataset=dataset)
-#             solveprob(prob)
-#             df = pd.DataFrame.from_dict(data_dict, orient='index')
-#             df.index.name = 'index'
-#             df = df.reset_index()
-#             print(prob.attributes.nodes)
-#             print(prob.attributes.bestbound)
-#             print(time.time() - start_time)
-            
-# #             # # First, filter the DataFrame for rows with upper_bound < 1
-# #             # df_filtered = df[df['upper_bound'] < 2]
-
-# #             # # For the depth plot, ensure that for each unique depth only the row with the highest index is kept.
-# #             # # Sorting by index ensures that the last occurrence is the one with the highest index.
-# #             # df_depth = df_filtered.drop_duplicates(subset=['depth'], keep='last')
-# #             # df_depth = df_depth.sort_values(by='depth')
-
-# #             # # Create a figure with 3 subplots
-# #             # fig, axes = plt.subplots(3, 1, figsize=(10, 15))
-
-# #             # # Plot 1: x-axis = index (using df_filtered)
-# #             # axes[0].plot(df_filtered.index, df_filtered['lower_bound'], label='Lower Bound', color='blue')
-# #             # # axes[0].plot(df_filtered.index, df_filtered['upper_bound'], label='Upper Bound', color='red')
-# #             # axes[0].set_xlabel('Index')
-# #             # axes[0].set_ylabel('Bound Value')
-# #             # axes[0].set_title('Bounds vs. Index (upper_bound < 1)')
-# #             # axes[0].legend()
-
-# #             # # Plot 2: x-axis = depth (using df_depth)
-# #             # axes[1].plot(df_depth['depth'], df_depth['lower_bound'], label='Lower Bound', color='blue')
-# #             # # axes[1].plot(df_depth['depth'], df_depth['upper_bound'], label='Upper Bound', color='red')
-# #             # axes[1].set_xlabel('Depth')
-# #             # axes[1].set_ylabel('Bound Value')
-# #             # axes[1].set_title('Bounds vs. Depth (upper_bound < 1, one row per depth with highest index)')
-# #             # axes[1].legend()
-
-# #             # # Plot 3: x-axis = time (using df_filtered)
-# #             # axes[2].plot(df_filtered['time'], df_filtered['lower_bound'], label='Lower Bound', color='blue')
-# #             # # axes[2].plot(df_filtered['time'], df_filtered['upper_bound'], label='Upper Bound', color='red')
-# #             # axes[2].set_xlabel('Time')
-# #             # axes[2].set_ylabel('Bound Value')
-# #             # axes[2].set_title('Bounds vs. Time (upper_bound < 1)')
-# #             # axes[2].legend()
-
-# #             # plt.tight_layout()
-# #             # plt.show()
-
-# #             for i, dataset in enumerate(datasets):
-# #                 # print(f"Scenario {scenario}, solving instance {i}")
-# #                 # Create gurobi model and solve to optimal
-# #                 # gurobi_model = create_gurobi_model(n_planes=n_planes, dataset=dataset)
-# #                 # gurobi_model.setParam('OutputFlag', 0)
-# #                 # gurobi_model.optimize()
-# #                 # global gurobi_sol
-# #                 # gurobi_sol = gurobi_model.x
-# #                 print(f"Scenario {scenario}, solving instance {i}")
-# #                 start_time = time.time()
-# #                 prob = create_problem(n_planes=n_planes, dataset=dataset)
-# #                 solveprob(prob)
-# #                 num_nodes.append(prob.attributes.nodes)
-# #                 mip_bound.append(prob.attributes.bestbound)
-# #                 solve_time.append(time.time() - start_time)
-            
-# #             print('Objective ', mip_bound)
-# #             print("IPA Nodes ", num_nodes)
-# #             print('IPA time ', solve_time)
-
-# #             # Create the DataFrame for this scenario
-# #             df = pd.DataFrame({
-# #                 "Objective": mip_bound,
-# #                 "IPA Nodes": num_nodes,
-# #                 "IPA Time": solve_time
-# #             })
-# #             dfs.append(df)
-# #             print(f"Results for Scenario {scenario}:")
-# #             print(df)
-
-# #         # Calculate averages
-# #         average_nodes = [int(np.mean([dfs[0]["IPA Nodes"][i], dfs[1]["IPA Nodes"][i], dfs[2]["IPA Nodes"][i]])) for i in range(len(dfs[0]))]
-# #         average_time = [round(np.mean([dfs[0]["IPA Time"][i], dfs[1]["IPA Time"][i], dfs[2]["IPA Time"][i]]), 3) for i in range(len(dfs[0]))]
-
-# #         # Combine results into a single DataFrame for output
-# #         combined_data = []
-# #         for i in range(len(dfs[0])):
-# #             combined_data.append([
-# #                 i,  # Instance
-# #                 dfs[0].loc[i, "Objective"], dfs[0].loc[i, "IPA Nodes"], dfs[0].loc[i, "IPA Time"],  # Scenario 1
-# #                 dfs[1].loc[i, "Objective"], dfs[1].loc[i, "IPA Nodes"], dfs[1].loc[i, "IPA Time"],  # Scenario 2
-# #                 dfs[2].loc[i, "Objective"], dfs[2].loc[i, "IPA Nodes"], dfs[2].loc[i, "IPA Time"],  # Scenario 3
-# #                 average_nodes[i], average_time[i]  # Averages
-# #             ])
-
-# #         # Create a nicely formatted DataFrame
-# #         formatted_df = pd.DataFrame(combined_data, columns=[
-# #             "Instance",
-# #             "Scenario 1 - Objective", "Scenario 1 - IPA Nodes", "Scenario 1 - IPA Time",
-# #             "Scenario 2 - Objective", "Scenario 2 - IPA Nodes", "Scenario 2 - IPA Time",
-# #             "Scenario 3 - Objective", "Scenario 3 - IPA Nodes", "Scenario 3 - IPA Time",
-# #             "Average Nodes", "Average Time"
-# #         ])
-
-# #         # Generate output filename
-# #         # output_filename = "results_Mangasarian_heuristic.xlsx"
-# #         output_filename = f"results_Mangasarian_heuristic_{filename.split('.')[0].split('_', 1)[1]}.xlsx"  # e.g., results_10_2_3.xlsx
-# #         formatted_df.to_excel(output_filename, index=False)
-# #         print(f"Results saved to {output_filename}\n")
+        # any leftover
+        if results:
+            df = pd.DataFrame(results)
+            outname = f"results_{filename[:-4]}_batch_final.xlsx"
+            df.to_excel(outname, index=False)
+            print(f"  → Saved final batch to {outname}\n")

@@ -70,7 +70,7 @@ def starting_points(pdata: ProblemData, starts_list):
 
         # 2b) vectorized “find-feasible-start” loop
         B = 20  # batch size: tune as needed
-        while True:
+        for _ in range(100):
             # draw B random (W,Γ) pairs
             Ws     = rng.standard_normal((B, K, N))
             Gammas = rng.standard_normal((B, K))
@@ -101,7 +101,7 @@ def starting_points(pdata: ProblemData, starts_list):
 
         # 2c) alternating minimization (unchanged)
         prev_assign = assign.copy()
-        for _ in range(50):
+        for _ in range(100):
             w_old = w.copy()
             dot   = A @ w.T
             dist  = np.abs(dot - gamma)
@@ -280,40 +280,12 @@ def safe_tolist(arr):
 def compute_w_gamma_y(a, x, w_old, rows, cols, BigM):
     """
     Recalculate the optimal solution for hyperplane clustering given an integer solution x.
-
-    Parameters
-    ----------
-    a : array_like
-        Points to be classified, assumed to be a NumPy array of shape (rows, dim).
-    x : array_like
-        A flat list/array representing a binary assignment matrix (rows x cols) where 
-        x[i*cols + j] == 1 if point a[i] is in cluster j.
-    w_old : list or array
-        A list/array of warm-start hyperplane parameters for each cluster (each is a vector of length N).
-    rows : int
-        Number of rows (points).
-    cols : int
-        Number of clusters.
-    BigM : float
-        A sufficiently large constant (not used in this implementation).
-
-    Returns
-    -------
-    w : list
-        Concatenated optimal hyperplane parameters for each cluster.
-    gamma : list
-        Optimal gamma values (one per cluster).
-    y : list
-        The computed y values (one per point).
     """
-    import numpy as np
-
     # Ensure a and x are NumPy arrays and reshape x into a 2D (rows x cols) binary matrix.
     a = np.asarray(a)
     x = np.asarray(x).reshape(rows, cols)
 
     # For each cluster j, extract the subarray of points where x[i,j]==1.
-    # This uses boolean indexing and avoids manual index conversion.
     subarrays_per_j = {j: a[x[:, j].astype(bool)] for j in range(cols)}
 
     # Initialize lists to store hyperplane parameters.
@@ -323,48 +295,37 @@ def compute_w_gamma_y(a, x, w_old, rows, cols, BigM):
     # Process each cluster j.
     for j in range(cols):
         subarray = subarrays_per_j[j]
-        n = subarray.shape[0]
-        if n == 0:
-            # If no points are assigned, use the warm start and gamma = 0.
+        n_points = subarray.shape[0]
+        if n_points == 0:
             w_list.append(w_old[j])
             gamma_list.append(0)
             continue
 
-        # Compute the projection matrix:
-        #   P = I - (1/n) * ones(n, n)
-        # This is equivalent to I - (e e^T)/n.
-        P = np.eye(n) - np.ones((n, n)) / n
+        # Compute the projection matrix
+        P = np.eye(n_points) - np.ones((n_points, n_points)) / n_points
 
         # Compute B = subarray^T * P * subarray.
         B_j = subarray.T @ P @ subarray
 
-        # Use the inverse power method (with warm start) to compute the smallest eigenpair.
+        # Use the inverse power method to compute the smallest eigenpair.
         eigenvalue, w_j = inverse_power_method(B_j, w_old[j], tol=1e-4, max_iter=30)
 
-        # Compute gamma for cluster j:
-        # Since e.T @ subarray is equivalent to summing the rows of subarray, we can write:
-        gamma_j = np.sum(subarray @ w_j) / n
+        # Compute gamma for cluster j
+        gamma_j = np.sum(subarray @ w_j) / n_points
 
         w_list.append(w_j)
         gamma_list.append(gamma_j)
 
     # Compute y for each point.
-    # Assuming each point is assigned to exactly one cluster (i.e. each row of x has a single 1),
-    # we vectorize over clusters.
     y = np.zeros(rows)
     for j, (w_j, gamma_j) in enumerate(zip(w_list, gamma_list)):
-        # Get indices where point i is assigned to cluster j.
         indices = (x[:, j] == 1)
         if np.any(indices):
-            # Compute dot products for all assigned points at once.
             dp = a[indices] @ w_j
             term1 = dp - gamma_j
             term2 = -dp + gamma_j
-            # For each point, y is the maximum of (0, term1, term2).
             y[indices] = np.maximum(0, np.maximum(term1, term2))
 
-    # Concatenate the per-cluster hyperplane parameters into one flat vector.
-    # (This assumes each w_j is of length N, where N is defined globally.)
     w_concat = np.concatenate(w_list)
 
     return w_concat.tolist(), gamma_list, y.tolist()
@@ -458,23 +419,25 @@ def cbchecksol(prob, data, soltype, cutoff):
     on_ball = all(abs(np.linalg.norm(w_arr[i]) - 1) < tol for i in range(K))
     if on_ball:
         # If the LP obj is 0, we still reject so branching continues
-        if prob.attributes.lpobjval == 0:
-            return (1, cutoff)
+        # if prob.attributes.lpobjval == 0:
+        #     return (1, cutoff)
         # Otherwise accept this solution
         return (0, cutoff)
 
-    # 2) if every w-vector is nonzero but some are off-ball, record a heuristic
+    # 2) add closed-form solution for fixed x
+    # we can add them only if new_w is feasible for that ball
     nonzero = np.any(np.abs(w_arr) > 1e-4, axis=1)
     if np.all(nonzero):
         # extract x, recompute (w,gamma,y) via the MIP-free routine
         x_flat = sol[min(x_idxs) : max(x_idxs) + 1]
         new_w, new_gamma, new_y = compute_w_gamma_y(a, x_flat, w_arr, M, K, BigM)
-        # flatten and round
-        new_w, new_gamma, x_flat, new_y = [
-            safe_tolist(arr) for arr in (new_w, new_gamma, x_flat, new_y)
-        ]
-        new_sol = np.round(new_w + new_gamma + x_flat + new_y, 10).tolist()
-        refuse.append(new_sol)
+        if np.sum(np.array(new_y)**2) < prob.attributes.mipbestobjval:
+            # flatten and round
+            new_w, new_gamma, x_flat, new_y = [
+                safe_tolist(arr) for arr in (new_w, new_gamma, x_flat, new_y)
+                ]
+            new_sol = np.round(new_w + new_gamma + x_flat + new_y, 10).tolist()
+            refuse.append(new_sol)
 
     # In all other cases we reject
     return (1, cutoff)
@@ -694,19 +657,6 @@ def cbnewnode(prob, data, parentnode, newnode, branch):
 
     return 0
 
-def cb_usersolnotify(prob, data, solname, status):
-    """
-    This callback is invoked *after* Xpress has tried to process
-    a user‐solution added via prob.addmipsol().
-    - solname is the string name you gave when you called addmipsol.
-    - status is an integer describing the outcome:
-        0 = error, 
-        1 = feasible, 
-        2 = feasible after reoptimize,
-        … up to 8 = dropped.
-    """
-    print(f"[UserSolNotify] solution '{solname}' status={status}")
-
 def cbnodelpsolved(prob, data):
     """
     After an LP solve at a node, occasionally invoke a MIP-free heuristic
@@ -714,11 +664,11 @@ def cbnodelpsolved(prob, data):
     """
     pdata        = data["pd"]
     M, N, K   = pdata.M, pdata.N, pdata.K
-    a, BigM   = pdata.a, pdata.BigM
+    # a, BigM   = pdata.a, pdata.BigM
     tol       = pdata.tol
-    x_idxs    = data["x_idxs"]
-    node_data = data.setdefault("node_data", {})
-    refuse    = data["refuse_sol"]
+    # x_idxs    = data["x_idxs"]
+    # node_data = data.setdefault("node_data", {})
+    # refuse    = data["refuse_sol"]
 
     lower = prob.getAttrib("bestbound")
     rng   = np.random.default_rng(1234 + prob.attributes.currentnode)
@@ -729,77 +679,77 @@ def cbnodelpsolved(prob, data):
         or lower >= tol):
         return 0
 
-    # fetch the LP solution
-    try:
-        sol = prob.getCallbackSolution(prob.getVariable())
-    except:
-        return 0
+    # # fetch the LP solution
+    # try:
+    #     sol = prob.getCallbackSolution(prob.getVariable())
+    # except:
+    #     return 0
 
-    # extract x and build assignment vector
-    flat_x = sol[min(x_idxs) : max(x_idxs) + 1]
-    x_mat  = split_data(flat_x, M, K)
-    mask   = (x_mat == 1)
-    result = np.where(mask.any(axis=1), np.argmax(mask, axis=1), -1)
+    # # extract x and build assignment vector
+    # flat_x = sol[min(x_idxs) : max(x_idxs) + 1]
+    # x_mat  = split_data(flat_x, M, K)
+    # mask   = (x_mat == 1)
+    # result = np.where(mask.any(axis=1), np.argmax(mask, axis=1), -1)
 
-    node = prob.attributes.currentnode
-    nd   = node_data.setdefault(node, {})
+    # node = prob.attributes.currentnode
+    # nd   = node_data.setdefault(node, {})
 
-    # --- compute (or reuse) hyperplane weights w and gammas ---
-    if "heuristic_w" in nd:
-        w     = nd["heuristic_w"]
-        gamma = np.empty(K)
-        for i in range(K):
-            pts = a[result == i]
-            if pts.shape[0] == 0:
-                return 0
-            gamma[i] = np.sum(pts @ w[i]) / pts.shape[0]
-    else:
-        w     = np.empty((K, N))
-        gamma = np.empty(K)
-        for i in range(K):
-            pts = a[result == i]
-            if pts.shape[0] == 0:
-                return 0
-            P       = np.eye(pts.shape[0]) - np.ones((pts.shape[0], pts.shape[0]))/pts.shape[0]
-            B       = pts.T @ P @ pts
-            q       = nd["w_array"][i]
-            _, wj   = inverse_power_method(B, q, tol=1e-4, max_iter=30)
-            gamma[i] = np.sum(pts @ wj) / pts.shape[0]
-            w[i, :]  = wj
+    # # --- compute (or reuse) hyperplane weights w and gammas ---
+    # if "heuristic_w" in nd:
+    #     w     = nd["heuristic_w"]
+    #     gamma = np.empty(K)
+    #     for i in range(K):
+    #         pts = a[result == i]
+    #         if pts.shape[0] == 0:
+    #             return 0
+    #         gamma[i] = np.sum(pts @ w[i]) / pts.shape[0]
+    # else:
+    #     w     = np.empty((K, N))
+    #     gamma = np.empty(K)
+    #     for i in range(K):
+    #         pts = a[result == i]
+    #         if pts.shape[0] == 0:
+    #             return 0
+    #         P       = np.eye(pts.shape[0]) - np.ones((pts.shape[0], pts.shape[0]))/pts.shape[0]
+    #         B       = pts.T @ P @ pts
+    #         q       = nd["w_array"][i]
+    #         _, wj   = inverse_power_method(B, q, tol=1e-4, max_iter=30)
+    #         gamma[i] = np.sum(pts @ wj) / pts.shape[0]
+    #         w[i, :]  = wj
 
-    # --- refine any unassigned points by alternating minimization ---
-    unmask   = result < 0
-    pts_un   = a[unmask]
-    prev_ass = np.zeros(pts_un.shape[0])
-    rows_idx = np.arange(M)
+    # # --- refine any unassigned points by alternating minimization ---
+    # unmask   = result < 0
+    # pts_un   = a[unmask]
+    # prev_ass = np.zeros(pts_un.shape[0])
+    # rows_idx = np.arange(M)
 
-    for _ in range(100):
-        w_old       = w.copy()
-        dps         = pts_un @ w.T
-        dists       = np.abs(dps - gamma)
-        assigns     = np.argmin(dists, axis=1)
-        result[unmask] = assigns
+    # for _ in range(100):
+    #     w_old       = w.copy()
+    #     dps         = pts_un @ w.T
+    #     dists       = np.abs(dps - gamma)
+    #     assigns     = np.argmin(dists, axis=1)
+    #     result[unmask] = assigns
 
-        # rebuild x and flatten
-        x_full = np.zeros((M, K), dtype=int)
-        x_full[rows_idx, result] = 1
-        flat_x = x_full.ravel()
+    #     # rebuild x and flatten
+    #     x_full = np.zeros((M, K), dtype=int)
+    #     x_full[rows_idx, result] = 1
+    #     flat_x = x_full.ravel()
 
-        # recompute (w, gamma, y)
-        w_list, gamma_list, y = compute_w_gamma_y(a, flat_x, w_old, M, K, BigM)
-        w     = np.array(w_list).reshape(K, N)
-        gamma = np.array(gamma_list)
+    #     # recompute (w, gamma, y)
+    #     w_list, gamma_list, y = compute_w_gamma_y(a, flat_x, w_old, M, K, BigM)
+    #     w     = np.array(w_list).reshape(K, N)
+    #     gamma = np.array(gamma_list)
 
-        if np.linalg.norm(prev_ass - assigns) < tol:
-            break
-        prev_ass = assigns.copy()
+    #     if np.linalg.norm(prev_ass - assigns) < tol:
+    #         break
+    #     prev_ass = assigns.copy()
 
-    # --- pack into a new MIP solution and stash it ---
-    new_sol = np.concatenate([w.ravel(), gamma.ravel(), flat_x, np.asarray(y).ravel()])
-    refuse.append(np.round(new_sol, 10).tolist())
+    # # --- pack into a new MIP solution and stash it ---
+    # new_sol = np.concatenate([w.ravel(), gamma.ravel(), flat_x, np.asarray(y).ravel()])
+    # # refuse.append(np.round(new_sol, 10).tolist())
 
-    # remember for next time
-    nd["heuristic_w"] = w
+    # # remember for next time
+    # nd["heuristic_w"] = w
 
     return 0
     
@@ -885,19 +835,37 @@ def solve(pdata: ProblemData) -> xp.problem:
     prob.addcbchgbranchobject(cbbranch, data, 2)
     prob.addcbnewnode(cbnewnode, data, 2)
     prob.addcbnodelpsolved(cbnodelpsolved, data, 2)
-    # prob.addcbusersolnotify(cb_usersolnotify, data, 1)
 
     # 6) solver controls (all using local N,K)
+    
+    # best first
     prob.controls.backtrack       = 5
+    prob.controls.nodeselection  = 4
     prob.controls.backtracktie   = 5
-    prob.controls.timelimit      = 1800
+    prob.controls.breadthfirst   = (N + 1) ** K + 1
+    
+    # best bound
+    # prob.controls.backtrack       = 3
+    # prob.controls.nodeselection  = 2
+    # prob.controls.backtracktie   = 1
+    
+    # depth first search
+    # prob.controls.nodeselection  = 5
+    
+    
+    prob.controls.timelimit      = 3600
     prob.controls.randomseed     = 42
     prob.controls.deterministic  = 1
-    prob.controls.nodeselection  = 4
-    prob.controls.breadthfirst   = (N + 1) ** K + 1
     # prob.controls.threads        = 1
+    # prob.controls.maxnode = 10000
+    
+    # to avoid numerical errors with LP
+    # prob.controls.miprelstop = 1e-4 
+    # prob.controls.scaling = 1
+    # prob.controls.feastol = 1e-7
     
     start_time = time.time()
+    
     # 7) run
     prob.mipoptimize()
     computation_time = time.time() - start_time
@@ -909,14 +877,23 @@ if __name__ == "__main__":
     # You can adjust tol, number of random starts, batch size, etc.
     TOL        = 1e-4
     N_STARTS   = 100
-    BATCH_SIZE = 2
+    # BATCH_SIZE = 4
     RESUME_IDX = 0
 
-    datasets_filenames = [
-        # "LowDim_with_noise.pkl",
+    datasets_filenames = [        
+        'Vision_Instances_hard.pkl',
+        # 'Vision_Instances.pkl',
+        # 'test_instances.pkl'
         # "LowDim_no_noise.pkl",
-        # "HighDim_with_noise.pkl",
-        "HighDim_no_noise.pkl"
+        # "LowDim_low_noise.pkl",
+        # "LowDim_medium_noise.pkl",
+        # "LowDim_high_noise.pkl",
+        # "HighDim_low_noise.pkl",
+        # "HighDim_medium_noise.pkl",
+        # "HighDim_high_noise.pkl"
+        # "Hyperplane_Instances_low_noise.pkl",
+        # "Hyperplane_Instances_medium_noise.pkl",
+        # "Hyperplane_Instances_high_noise.pkl",
     ]
 
     for filename in datasets_filenames:
@@ -927,8 +904,8 @@ if __name__ == "__main__":
 
         results = []
         for idx, ((m, n, k), data_array) in enumerate(datasets_dict.items()):
-            # if idx >= 2:
-            #     continue
+            if idx <= 3:
+                continue
             
             # build your ProblemData
             problem_data = ProblemData(
@@ -947,14 +924,19 @@ if __name__ == "__main__":
             duration = round(computation_time, 3)
             
             # 3) collect metrics
-            nodes     = prob.attributes.nodes
-            bestbound = prob.attributes.bestbound
+            nodes          = prob.attributes.nodes
+            lower_bound    = prob.attributes.bestbound
+            upper_bound    = prob.attributes.mipbestobjval
+            
+            # optimality_gap = abs((upper_bound - lower_bound) / upper_bound)
 
             print(f"  Instance {idx} (m={m},n={n},k={k}):")
-            print(f"    nodes   = {nodes}")
-            print(f"    best LB = {bestbound:.6f}")
-            print(f"    time    = {duration}s\n")
-            
+            print(f"    Nodes:          {nodes}")
+            print(f"    Time:           {duration}s")
+            print(f"    Lower Bound:    {lower_bound:.6f}")
+            print(f"    Upper Bound:    {upper_bound:.6f}")
+            # print(f"    Optimality Gap: {optimality_gap*100:.4f}%\n")
+
             del prob
             gc.collect()
 
@@ -963,21 +945,25 @@ if __name__ == "__main__":
                 "n": n,
                 "k": k,
                 "Nodes": nodes,
-                "BestLB": bestbound,
-                "Time": duration
+                "Time": duration,
+                "LowerBound": lower_bound,
+                "UpperBound": upper_bound,
+                # "Gap": optimality_gap,
             })
 
             # batch‐write every BATCH_SIZE
-            if len(results) == BATCH_SIZE:
-                df = pd.DataFrame(results)
-                outname = f"results_{filename[:-4]}_batch_{idx//BATCH_SIZE}.xlsx"
-                df.to_excel(outname, index=False)
-                print(f"  → Saved batch to {outname}\n")
-                results = []
+            # if len(results) == BATCH_SIZE:
+            #     df = pd.DataFrame(results)
+            #     outname = f"results_{filename[:-4]}_batch_{idx//BATCH_SIZE}.xlsx"
+            #     # outname = f"results_{filename[:-4]}_bestbound_2.xlsx"
+            #     df.to_excel(outname, index=False)
+            #     print(f"  → Saved batch to {outname}\n")
+            #     results = []
 
         # any leftover
         if results:
             df = pd.DataFrame(results)
-            outname = f"results_{filename[:-4]}_batch_final.xlsx"
+            outname = f"results_{filename[:-4]}_batch_3.xlsx"
+            # outname = f"results_{filename[:-4]}_best_bound.xlsx"
             df.to_excel(outname, index=False)
             print(f"  → Saved final batch to {outname}\n")

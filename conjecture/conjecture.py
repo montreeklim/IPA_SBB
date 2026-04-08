@@ -20,6 +20,8 @@ class Scene:
     renderer: str
     title: str
     report_lines: list[str]
+    legend_title: str | None = None
+    legend_lines: list[str] = field(default_factory=list)
     save_kwargs: dict = field(default_factory=dict)
 
 
@@ -433,6 +435,50 @@ def tangent_basis_3d(point):
     return normal, u, v
 
 
+def add_face_affine_hull_visualization(
+    graphics,
+    face,
+    plane_color="#1f9bb6",
+    circle_color="#005f73",
+):
+    A, B, C = face
+    n = normal_of_plane(A, B, C)
+    d = n.dot_product(A)
+    center = d * n
+    radius_squared = max(0.0, 1.0 - float(N(d * d)))
+    radius = sqrt(radius_squared)
+
+    u = B - A
+    u = u / u.norm()
+    v = n.cross_product(u)
+    v = v / v.norm()
+
+    span = max(float(N(radius)) * 1.9, 1.10)
+    patch = [
+        center - span * u - span * v,
+        center + span * u - span * v,
+        center + span * u + span * v,
+        center - span * u + span * v,
+    ]
+    graphics += polygon3d(patch, color=plane_color, opacity=0.18)
+    for X, Y in zip(patch, patch[1:] + patch[:1]):
+        graphics += line3d([X, Y], color=plane_color, thickness=4)
+
+    if float(N(radius)) > 1e-8:
+        circle_points = [
+            center + radius * (cos(theta) * u + sin(theta) * v)
+            for theta in srange(0, 2 * pi, 2 * pi / 120)
+        ]
+        circle_points.append(circle_points[0])
+        graphics += line3d(circle_points, color=circle_color, thickness=10)
+
+    # Show the plane's normal so the associated halfspace has a visible direction.
+    normal_tip = center + 0.55 * n
+    graphics += line3d([center, normal_tip], color=circle_color, thickness=7)
+    graphics += point3d(center, size=POINT_MARKER_SIZE, color=circle_color)
+    graphics += point3d(normal_tip, size=POINT_MARKER_SIZE, color=circle_color)
+
+
 def draw_digit_segments_3d(graphics, label, anchor, u, v, scale=0.07, color="black", thickness=3):
     x_cursor = 0.0
     for char in str(label):
@@ -594,9 +640,6 @@ def build_2d_refinement_scene(continue_iterations=None, display_one_edge=False):
     if focus_step is not None:
         draw_2d_focus_overlay(G, focus_step)
 
-    if continue_iterations is not None:
-        add_2d_continue_labels(G, steps, focus_step=focus_step)
-
     report_lines = [
         f"mode: {mode_label}",
         f"convex: {convex}",
@@ -613,11 +656,20 @@ def build_2d_refinement_scene(continue_iterations=None, display_one_edge=False):
     if not convex:
         report_lines.append(f"non-supporting boundary segments: {bad_edges}")
 
+    legend_lines = []
+    if continue_iterations is not None:
+        legend_lines = [
+            f"{step.step_index}: point added from {step.facet_label}"
+            for step in steps
+        ]
+
     return Scene(
         graphics=G,
         renderer="embedded-png-html",
         title=title,
         report_lines=report_lines,
+        legend_title="Added Points" if legend_lines else None,
+        legend_lines=legend_lines,
         save_kwargs={"axes": False, "aspect_ratio": 1},
     )
 
@@ -794,9 +846,7 @@ def build_3d_refinement_scene(
 
     if focus_step is not None:
         draw_3d_focus_overlay(G, focus_step)
-
-    if continue_iterations is not None:
-        add_3d_continue_labels(G, steps, focus_step=focus_step)
+        add_face_affine_hull_visualization(G, focus_step.parent_face)
 
     report_lines = [
         f"mode: {mode_label}",
@@ -816,11 +866,20 @@ def build_3d_refinement_scene(
     if degenerate_index is not None:
         report_lines.append(f"degenerate facet: F{degenerate_index + 1}")
 
+    legend_lines = []
+    if continue_iterations is not None:
+        legend_lines = [
+            f"{step.step_index}: point added from {step.facet_label}"
+            for step in steps
+        ]
+
     return Scene(
         graphics=G,
         renderer="sage-html",
         title=title,
         report_lines=report_lines,
+        legend_title="Added Points" if legend_lines else None,
+        legend_lines=legend_lines,
         save_kwargs={"online": True},
     )
 
@@ -992,6 +1051,9 @@ def build_3d_all_faces_scene(degenerate=False, display_one_face=False):
         if show_facet and chosen_edge is not None:
             G += line3d(list(chosen_edge), color="black", thickness=5)
 
+    if display_one_face:
+        add_face_affine_hull_visualization(G, facets[display_facet_index][1])
+
     all_vertices = vertices + projected_points
     convex, bad_faces = is_convex_boundary(boundary_triangles, all_vertices)
 
@@ -1087,6 +1149,19 @@ def write_embedded_image_html(scene, output_path):
         scene.graphics.save(str(png_path), **scene.save_kwargs)
         encoded_image = base64.b64encode(png_path.read_bytes()).decode("ascii")
 
+    legend_section = ""
+    if scene.legend_lines:
+        legend_items = "\n".join(
+            f"<li>{html_module.escape(line)}</li>" for line in scene.legend_lines
+        )
+        legend_section = f"""
+    <section class="legend">
+      <h2>{html_module.escape(scene.legend_title or "Legend")}</h2>
+      <ol>
+        {legend_items}
+      </ol>
+    </section>"""
+
     report_items = "\n".join(
         f"<li>{html_module.escape(line)}</li>" for line in scene.report_lines
     )
@@ -1103,18 +1178,39 @@ def write_embedded_image_html(scene, output_path):
       color: #20242b;
     }}
     main {{
-      max-width: 960px;
+      max-width: 1200px;
       margin: 0 auto;
       background: white;
       padding: 1.5rem;
       border-radius: 16px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
     }}
+    .layout {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 280px;
+      gap: 1.5rem;
+      align-items: start;
+    }}
+    .legend {{
+      background: #faf7f2;
+      border: 1px solid #d7cbb9;
+      border-radius: 12px;
+      padding: 1rem;
+    }}
+    .legend h2 {{
+      margin: 0 0 0.75rem 0;
+      font-size: 1rem;
+    }}
     img {{
       width: 100%;
       height: auto;
       display: block;
       margin-top: 1rem;
+    }}
+    @media (max-width: 900px) {{
+      .layout {{
+        grid-template-columns: 1fr;
+      }}
     }}
   </style>
 </head>
@@ -1124,7 +1220,98 @@ def write_embedded_image_html(scene, output_path):
     <ul>
       {report_items}
     </ul>
-    <img src="data:image/png;base64,{encoded_image}" alt="{html_module.escape(scene.title)}">
+    <div class="layout">
+      <div>
+        <img src="data:image/png;base64,{encoded_image}" alt="{html_module.escape(scene.title)}">
+      </div>
+      {legend_section}
+    </div>
+  </main>
+</body>
+</html>
+"""
+    output_path.write_text(body, encoding="utf-8")
+
+
+def write_sage_wrapper_html(scene, output_path):
+    with TemporaryDirectory() as tmp_dir:
+        raw_html_path = Path(tmp_dir) / "scene.html"
+        scene.graphics.save(str(raw_html_path), **scene.save_kwargs)
+        encoded_scene = base64.b64encode(raw_html_path.read_bytes()).decode("ascii")
+
+    legend_section = ""
+    if scene.legend_lines:
+        legend_items = "\n".join(
+            f"<li>{html_module.escape(line)}</li>" for line in scene.legend_lines
+        )
+        legend_section = f"""
+      <section class="legend">
+        <h2>{html_module.escape(scene.legend_title or "Legend")}</h2>
+        <ol>
+          {legend_items}
+        </ol>
+      </section>"""
+
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title></title>
+  <style>
+    body {{
+      margin: 0;
+      background: white;
+    }}
+    main {{
+      width: 100vw;
+      height: 100vh;
+    }}
+    .layout {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr){' 300px' if scene.legend_lines else ''};
+      gap: 0;
+      align-items: start;
+      width: 100%;
+      height: 100%;
+    }}
+    iframe {{
+      width: 100%;
+      height: 100vh;
+      border: 0;
+      background: white;
+    }}
+    .legend {{
+      font-family: sans-serif;
+      background: #faf7f2;
+      border: 1px solid #d7cbb9;
+      padding: 1rem;
+      height: 100vh;
+      overflow: auto;
+      box-sizing: border-box;
+    }}
+    .legend h2 {{
+      margin: 0 0 0.75rem 0;
+      font-size: 1rem;
+    }}
+    @media (max-width: 980px) {{
+      .layout {{
+        grid-template-columns: 1fr;
+      }}
+      iframe {{
+        height: 70vh;
+      }}
+      .legend {{
+        height: auto;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="layout">
+      <iframe src="data:text/html;base64,{encoded_scene}" title="{html_module.escape(scene.title)}"></iframe>
+      {legend_section}
+    </div>
   </main>
 </body>
 </html>
@@ -1134,7 +1321,7 @@ def write_embedded_image_html(scene, output_path):
 
 def save_scene(scene, output_path):
     if scene.renderer == "sage-html":
-        scene.graphics.save(str(output_path), **scene.save_kwargs)
+        write_sage_wrapper_html(scene, output_path)
         return
 
     if scene.renderer == "embedded-png-html":
